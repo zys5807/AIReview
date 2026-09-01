@@ -132,7 +132,9 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
     # ---- 资金基准：期初资金（start 当日，以 CNY 为主基准币种，无 CNY 时取唯一币种）
     initial = start_balances.get(CNY) or next(iter(start_balances.values()), None)
     # ---- 按日盈亏（主基准币种口径，用于净值曲线/回撤/夏普）
-    main_cur = CNY if CNY in start_balances else next(iter(start_balances))
+    # start_balances 可能为空（阶段起点早于首笔资金流水日期，如"近3月"），此时取默认 CNY；
+    # 后续资金类指标均受 has_capital 保护，不会使用该值，仅 avg_pl_ratio 等非资金指标照常计算
+    main_cur = CNY if CNY in start_balances else next(iter(start_balances), CNY)
     by_day_pnl: dict = defaultdict(float)
     for t in trades:
         net = _net_pnl(t)
