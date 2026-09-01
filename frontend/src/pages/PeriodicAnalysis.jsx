@@ -254,15 +254,33 @@ export default function PeriodicAnalysis() {
         </Space>
       </Card>
 
-      {/* 统计卡片 */}
-      <Row gutter={16}>
-        <Col span={3}>
-          <Card size="small">
+      {/* 统计卡片：两行布局（第一行 6 基础指标，第二行期初/期末资金；所有卡片统一高度 88px，内容垂直居中，保证标签大小一致） */}
+      <Row gutter={[16, 16]}>
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic title="交易笔数" value={summary?.count ?? 0} />
           </Card>
         </Col>
-        <Col span={3}>
-          <Card size="small">
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic
               title="胜率"
               value={((summary?.win_rate ?? 0) * 100).toFixed(1)}
@@ -270,8 +288,17 @@ export default function PeriodicAnalysis() {
             />
           </Card>
         </Col>
-        <Col span={3}>
-          <Card size="small">
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic
               title="总盈亏"
               value={summary?.total_pnl ?? 0}
@@ -285,8 +312,17 @@ export default function PeriodicAnalysis() {
             />
           </Card>
         </Col>
-        <Col span={3}>
-          <Card size="small">
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic
               title="盈亏比"
               value={summary?.profit_factor ?? 0}
@@ -294,13 +330,31 @@ export default function PeriodicAnalysis() {
             />
           </Card>
         </Col>
-        <Col span={3}>
-          <Card size="small">
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic title="平均评分" value={avgScore ?? '-'} precision={1} />
           </Card>
         </Col>
-        <Col span={3}>
-          <Card size="small">
+        <Col span={4}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
             <Statistic
               title="平均每笔盈亏"
               value={summary?.avg_pnl ?? 0}
@@ -314,29 +368,32 @@ export default function PeriodicAnalysis() {
             />
           </Card>
         </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic
-              title={
-                <span>
-                  阶段期初资金
-                  <Tooltip title="各币种阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏。CNY=人民币账户；USD=美元账户（USDT 1:1 并入）">
-                    <QuestionCircleOutlined
-                      style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
-                    />
-                  </Tooltip>
-                </span>
-              }
-              value={Object.keys(metrics?.start_balances ?? {}).length ? '' : '-'}
-              styles={{ content: { fontSize: 14 } }}
-            />
-            <div style={{ marginTop: 4, fontSize: 13, lineHeight: '22px' }}>
-              {metrics?.start_balances && Object.keys(metrics.start_balances).length > 0 ? (
-                ['CNY', 'USD'].map(
+        <Col span={12}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
+            <div style={{ color: '#999', fontSize: 13, marginBottom: 4 }}>
+              阶段期初资金
+              <Tooltip title="各币种阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏。CNY=人民币账户；USD=美元账户（USDT 1:1 并入）">
+                <QuestionCircleOutlined
+                  style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
+                />
+              </Tooltip>
+            </div>
+            {metrics?.start_balances && Object.keys(metrics.start_balances).length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px', fontSize: 14, lineHeight: '22px' }}>
+                {['CNY', 'USD'].map(
                   (cur) =>
                     metrics.start_balances[cur] != null && (
-                      <div key={cur}>
-                        <span style={{ color: '#999' }}>
+                      <span key={cur}>
+                        <span style={{ color: '#999', marginRight: 6 }}>
                           {cur === 'CNY' ? '人民币' : '美元/USDT'}：
                         </span>
                         <strong>
@@ -345,53 +402,60 @@ export default function PeriodicAnalysis() {
                             maximumFractionDigits: 2,
                           })}
                         </strong>
-                      </div>
+                      </span>
                     )
-                )
-              ) : (
-                <span style={{ color: '#999' }}>未设置资金</span>
-              )}
-            </div>
+                )}
+              </div>
+            ) : (
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                未设置资金
+              </Typography.Text>
+            )}
           </Card>
         </Col>
-        <Col span={6}>
-          <Card size="small">
-            <Statistic
-              title={
-                <span>
-                  阶段期末资金
-                  <Tooltip title="各币种期初资金 + 该币种阶段交易盈亏（与阶段总收益率口径一致）">
-                    <QuestionCircleOutlined
-                      style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
-                    />
-                  </Tooltip>
-                </span>
-              }
-              value={Object.keys(metrics?.end_balances ?? {}).length ? '' : '-'}
-              styles={{ content: { fontSize: 14 } }}
-            />
-            <div style={{ marginTop: 4, fontSize: 13, lineHeight: '22px' }}>
-              {metrics?.end_balances && Object.keys(metrics.end_balances).length > 0 ? (
-                ['CNY', 'USD'].map((cur) => {
+        <Col span={12}>
+          <Card
+            size="small"
+            bodyStyle={{
+              minHeight: 88,
+              padding: '12px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'center',
+            }}
+          >
+            <div style={{ color: '#999', fontSize: 13, marginBottom: 4 }}>
+              阶段期末资金
+              <Tooltip title="各币种期初资金 + 该币种阶段交易盈亏（与阶段总收益率口径一致）">
+                <QuestionCircleOutlined
+                  style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
+                />
+              </Tooltip>
+            </div>
+            {metrics?.end_balances && Object.keys(metrics.end_balances).length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px', fontSize: 14, lineHeight: '22px' }}>
+                {['CNY', 'USD'].map((cur) => {
                   const sb = metrics.start_balances?.[cur]
                   const eb = metrics.end_balances[cur]
                   if (eb == null || sb == null) return null
                   return (
-                    <div key={cur}>
-                      <span style={{ color: '#999' }}>
+                    <span key={cur}>
+                      <span style={{ color: '#999', marginRight: 6 }}>
                         {cur === 'CNY' ? '人民币' : '美元/USDT'}：
                       </span>
                       <strong style={{ color: eb >= sb ? '#cf1322' : '#3f8600' }}>
                         {cur === 'CNY' ? '¥' : '$'}
                         {eb.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
                       </strong>
-                    </div>
+                    </span>
                   )
-                })
-              ) : (
-                <span style={{ color: '#999' }}>未设置资金</span>
-              )}
-            </div>
+                })}
+              </div>
+            ) : (
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                未设置资金
+              </Typography.Text>
+            )}
           </Card>
         </Col>
       </Row>
@@ -410,8 +474,8 @@ export default function PeriodicAnalysis() {
           </Space>
         }
       >
-        <Row gutter={16}>
-          <Col span={8}>
+        <Row gutter={[16, 16]}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="平均单笔盈亏比"
@@ -420,7 +484,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="日平均仓位"
@@ -430,7 +494,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="阶段总收益率"
@@ -449,7 +513,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="阶段最大回撤"
@@ -465,7 +529,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="最大周度回撤"
@@ -481,7 +545,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="卡玛比率"
@@ -490,7 +554,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="夏普比率"
@@ -499,7 +563,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={8}>
+          <Col span={3}>
             <Card size="small">
               <Statistic
                 title="手续费汇总"

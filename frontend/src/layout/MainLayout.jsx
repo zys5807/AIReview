@@ -50,7 +50,7 @@ export default function MainLayout() {
             AIReviewSystem
           </Typography.Title>
           <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 4 }}>
-            V1.0.6.3 · {user?.is_admin ? '管理员' : '普通用户'}
+            V1.0.6.4 · {user?.is_admin ? '管理员' : '普通用户'}
           </div>
         </div>
         <Menu
