@@ -9,13 +9,24 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from ..models import ReviewReport, Trade
-from .account import balance_at, equity_before
+from .account import equity_before, CNY, USD
 
 # 常见问题关键词（用于从复盘报告的不足/改进中聚合高频主题）
 COMMON_ISSUE_KEYWORDS = [
     "仓位", "止损", "出场", "入场", "纪律", "情绪",
     "趋势", "盈亏比", "杠杆", "风险", "追涨", "杀跌", "分批", "信号",
 ]
+
+
+def _pnl_by_currency(trades: list[Trade]) -> dict[str, float]:
+    """阶段内每笔交易盈亏按币种归类：A股/商品期货→CNY，数字货币→USD"""
+    out: dict[str, float] = {}
+    for t in trades:
+        if t.pnl is None:
+            continue
+        cur = USD if (t.instrument_type or "") == "数字货币" else CNY
+        out[cur] = out.get(cur, 0.0) + t.pnl
+    return {k: round(v, 2) for k, v in out.items()}
 
 
 def _calc_summary(trades: list[Trade]) -> dict:
@@ -68,16 +79,25 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
     前端应提示"请先设置初始资金"。平均单笔盈亏比不依赖资金。
 
     期初资金 = 阶段首日交易开始前的账户权益（初始资金+出入金+此前全部已平仓交易盈亏，
-    equity_before 口径，不含当日交易盈亏）；期末资金 = 期初资金 + 阶段总盈亏（与收益率口径一致）。
+    equity_before 口径，不含当日交易盈亏），按币种分别返回
+    （CNY 人民币 / USD 美元；数字货币盈亏计入 USD，A股/期货计入 CNY）。
+    期末资金 = 期初资金 + 该币种阶段总盈亏。
     """
     count = len(trades)
-    # ---- 期初资金（阶段首日交易开始前权益，含此前交易盈亏），无流水时 None
-    start_balance = equity_before(db, user_id, start.date())
-    has_capital = start_balance is not None and start_balance > 0
+    # ---- 各币种期初资金（阶段首日交易开始前权益，含此前交易盈亏），无流水时 None
+    start_balances = {
+        cur: equity_before(db, user_id, start.date(), cur) for cur in (CNY, USD)
+    }
+    start_balances = {k: v for k, v in start_balances.items() if v is not None}
+    has_capital = bool(start_balances)
+    # 阶段盈亏按币种归类
+    pnl_by_cur = _pnl_by_currency(trades)
     if count == 0:
         return {
-            "start_balance": start_balance,
-            "end_balance": start_balance,
+            "start_balances": start_balances,
+            "end_balances": dict(start_balances),
+            "start_balance": start_balances.get(CNY),
+            "end_balance": start_balances.get(CNY),
             "avg_pl_ratio": None,
             "avg_daily_position_pct": None,
             "total_return_pct": None,
@@ -101,12 +121,16 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
     else:
         avg_pl_ratio = None
 
-    # ---- 资金基准：期初资金（start 当日）
-    initial = start_balance    # ---- 按日盈亏
+    # ---- 资金基准：期初资金（start 当日，以 CNY 为主基准币种，无 CNY 时取唯一币种）
+    initial = start_balances.get(CNY) or next(iter(start_balances.values()), None)
+    # ---- 按日盈亏（主基准币种口径，用于净值曲线/回撤/夏普）
+    main_cur = CNY if CNY in start_balances else next(iter(start_balances))
     by_day_pnl: dict = defaultdict(float)
     for t in trades:
         if t.pnl is not None:
-            by_day_pnl[t.exit_time.date()] += t.pnl
+            cur = USD if (t.instrument_type or "") == "数字货币" else CNY
+            if cur == main_cur:
+                by_day_pnl[t.exit_time.date()] += t.pnl
 
     # ---- 净值曲线（自然日展开，无交易日照记 0）
     days = (end.date() - start.date()).days + 1
@@ -132,8 +156,8 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
                     mdd = dd
         return mdd
 
-    # ---- 2. 阶段总收益率
-    total_pnl = sum(pnls)
+    # ---- 2. 阶段总收益率（主基准币种口径：该币种盈亏 ÷ 该币种期初资金）
+    total_pnl = pnl_by_cur.get(main_cur, 0.0)
     total_return_pct = round(total_pnl / initial * 100, 2) if has_capital else None
 
     # ---- 3. 阶段最大回撤（资金曲线）
@@ -181,11 +205,14 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
             if std_r > 0:
                 sharpe_ratio = round(mean_r / std_r * math.sqrt(252), 3)
 
-    # ---- 8. 日平均仓位（含空仓日 0%，反映阶段资金利用率）
+    # ---- 8. 日平均仓位（含空仓日 0%，仅统计主基准币种的交易，反映该币种资金利用率）
     avg_daily_position_pct = None
     if has_capital:
         day_invested: dict = defaultdict(float)
         for t in trades:
+            cur = USD if (t.instrument_type or "") == "数字货币" else CNY
+            if cur != main_cur:
+                continue
             inv = t.invested_capital or 0
             if inv <= 0:
                 continue
@@ -198,19 +225,25 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
         ratios = []
         d = start.date()
         for _ in range(days):
-            bal = equity_before(db, user_id, d)
+            bal = equity_before(db, user_id, d, main_cur)
             if bal and bal > 0:
                 ratios.append(day_invested.get(d, 0.0) / bal)
             d += timedelta(days=1)
         if ratios:
             avg_daily_position_pct = round(sum(ratios) / len(ratios) * 100, 2)
 
-    # ---- 期末资金 = 期初资金 + 阶段总盈亏（与 total_return_pct 分子一致）
-    end_balance = round(start_balance + total_pnl, 2) if has_capital else None
+    # ---- 期末资金：各币种 = 期初 + 该币种阶段盈亏（与收益率口径一致）
+    end_balances = {
+        cur: round(start_balances[cur] + pnl_by_cur.get(cur, 0.0), 2)
+        for cur in start_balances
+    }
 
     return {
-        "start_balance": start_balance,
-        "end_balance": end_balance,
+        "start_balances": start_balances,
+        "end_balances": end_balances,
+        "start_balance": start_balances.get(CNY),
+        "end_balance": end_balances.get(CNY),
+        "main_currency": main_cur,
         "avg_pl_ratio": avg_pl_ratio,
         "avg_daily_position_pct": avg_daily_position_pct,
         "total_return_pct": total_return_pct,

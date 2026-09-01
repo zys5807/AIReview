@@ -50,7 +50,9 @@ export default function TradeUpload() {
   // 自动计算占用资金（品种/价格/数量变化时）
   const refreshAutoCapital = (values) => {
     const { instrument_type, instrument_code, instrument_name, entry_price, volume } = values
-    if (!entry_price || !volume || manualCapitalRef.current) return
+    // 数字货币：volume 即 USDT 持仓规模，占用资金=volume，不依赖价格
+    const needPrice = instrument_type !== '数字货币'
+    if (!volume || (needPrice && !entry_price) || manualCapitalRef.current) return
     calcTradeCapital({
       instrument_type,
       instrument_code,
@@ -375,7 +377,7 @@ export default function TradeUpload() {
               <Form.Item
                 name="volume"
                 label="交易手数/数量"
-                tooltip="A股：1手=100股；商品期货：1手按合约乘数计算；数字货币：填写USDT金额"
+                tooltip="A股：1手=100股；商品期货：1手按合约乘数计算；数字货币：填写USDT持仓规模金额（如开仓5万USDT填50000，占用资金=该金额）"
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} />
               </Form.Item>
@@ -405,7 +407,7 @@ export default function TradeUpload() {
               <Form.Item
                 name="invested_capital"
                 label="占用资金"
-                tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×手数×100；币=价×数量），也可手动修改"
+                tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×手数×100；数字货币=USDT持仓规模金额），也可手动修改"
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="自动计算" />
               </Form.Item>

@@ -96,6 +96,17 @@ export default function TradePlans() {
   const [flowForm] = Form.useForm()
   const [flowSaving, setFlowSaving] = useState(false)
 
+  // 币种展示辅助：CNY → ¥，USD → $（USDT 1:1 并入）
+  const CURRENCY_META = {
+    CNY: { symbol: '¥', label: '人民币' },
+    USD: { symbol: '$', label: '美元/USDT' },
+  }
+  const tradeCurrency = (type) => (type === '数字货币' ? 'USD' : 'CNY')
+  const fmtCur = (v, cur) =>
+    v == null || isNaN(v)
+      ? '—'
+      : `${CURRENCY_META[cur]?.symbol ?? ''}${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+
   // 表单实时仓位计算（输入计划手数/入场价后显示）
   const fInstrType = Form.useWatch('instrument_type', form)
   const fInstrCode = Form.useWatch('instrument_code', form)
@@ -114,9 +125,9 @@ export default function TradePlans() {
     }
   }
 
-  // 计划表单变化 → 实时计算占用资金/仓位比例
+  // 计划表单变化 → 实时计算占用资金/仓位比例（按品种对应币种资金）
   useEffect(() => {
-    if (!fPrice || !fVolume || !fInstrType) {
+    if (!fVolume || !fInstrType) {
       setLivePosition(null)
       return
     }
@@ -128,11 +139,13 @@ export default function TradePlans() {
       volume: fVolume,
     })
       .then((r) => {
-        const balance = accountSummary?.current_balance
+        const cur = tradeCurrency(fInstrType)
+        const balance = accountSummary?.balances?.[cur]
         setLivePosition({
           invested: r.invested_capital,
           matched: r.matched_name,
           multiplier: r.multiplier,
+          currency: cur,
           ratio:
             r.invested_capital != null && balance
               ? (r.invested_capital / balance) * 100
@@ -217,6 +230,7 @@ export default function TradePlans() {
       await createAccountFlow({
         flow_date: dayjs(values.flow_date).format('YYYY-MM-DD'),
         flow_type: values.flow_type,
+        currency: values.currency || 'CNY',
         amount: values.amount,
         note: values.note || '',
       })
@@ -288,54 +302,75 @@ export default function TradePlans() {
     <Tag color={STATUS_META[p.status]?.color}>{STATUS_META[p.status]?.label}</Tag>
   )
 
-  // 总仓位（进行中计划合计占用 ÷ 当前资金）
+  // 总仓位（进行中计划合计占用 ÷ 对应币种当前资金）
   const pendingInvested = (plans || [])
     .filter((p) => p.status === 'pending' && p.planned_invested != null)
     .reduce((s, p) => s + p.planned_invested, 0)
-  const totalRatio =
-    accountSummary?.current_balance && pendingInvested
-      ? (pendingInvested / accountSummary.current_balance) * 100
-      : null
+  const totalRatioByCur = {}
+  for (const cur of ['CNY', 'USD']) {
+    const bal = accountSummary?.balances?.[cur]
+    const invested = (plans || [])
+      .filter(
+        (p) =>
+          p.status === 'pending' &&
+          p.planned_invested != null &&
+          tradeCurrency(p.instrument_type) === cur
+      )
+      .reduce((s, p) => s + p.planned_invested, 0)
+    totalRatioByCur[cur] = bal && invested ? (invested / bal) * 100 : null
+  }
   const fmtMoney = (v) =>
     v == null || isNaN(v) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {/* V1.006 账户资金卡片 */}
+      {/* V1.006 账户资金卡片（按币种） */}
       <Card size="small">
         <Space size={24} wrap align="center">
+          {['CNY', 'USD'].map((cur) => {
+            const bal = accountSummary?.balances?.[cur]
+            const init = accountSummary?.initial_amounts?.[cur]
+            const ratio = totalRatioByCur[cur]
+            return (
+              <Space key={cur} size={8}>
+                <WalletOutlined style={{ fontSize: 18, color: '#534AB7' }} />
+                <Typography.Text type="secondary">
+                  {CURRENCY_META[cur].label}资金：
+                </Typography.Text>
+                <Typography.Text strong style={{ fontSize: 16 }}>
+                  {fmtCur(bal, cur)}
+                </Typography.Text>
+                <Typography.Text type="secondary">初始：</Typography.Text>
+                <Typography.Text>{fmtCur(init, cur)}</Typography.Text>
+                <Typography.Text type="secondary">仓位：</Typography.Text>
+                <Typography.Text
+                  strong
+                  style={{ color: ratio != null && ratio > 30 ? '#cf1322' : undefined }}
+                >
+                  {ratio != null ? `${ratio.toFixed(2)}%` : '—'}
+                </Typography.Text>
+              </Space>
+            )
+          })}
           <Space>
-            <WalletOutlined style={{ fontSize: 18, color: '#534AB7' }} />
-            <Typography.Text type="secondary">当前账户资金：</Typography.Text>
-            <Typography.Text strong style={{ fontSize: 16 }}>
-              ¥{fmtMoney(accountSummary?.current_balance)}
-            </Typography.Text>
-          </Space>
-          <Space>
-            <Typography.Text type="secondary">初始资金：</Typography.Text>
-            <Typography.Text>¥{fmtMoney(accountSummary?.initial_amount)}</Typography.Text>
-            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-              流水：
-            </Typography.Text>
+            <Typography.Text type="secondary">流水：</Typography.Text>
             <Typography.Text>{accountSummary?.flow_count ?? 0} 条</Typography.Text>
-          </Space>
-          <Space>
-            <Typography.Text type="secondary">进行中计划总仓位：</Typography.Text>
-            <Typography.Text strong style={{ color: totalRatio != null && totalRatio > 30 ? '#cf1322' : undefined }}>
-              {totalRatio != null ? `${totalRatio.toFixed(2)}%` : '—'}
-            </Typography.Text>
           </Space>
           <Button size="small" icon={<FundOutlined />} onClick={openFlowModal}>
             管理资金
           </Button>
         </Space>
-        {accountSummary?.current_balance == null && (
+        {!accountSummary?.balances || Object.keys(accountSummary.balances).length === 0 ? (
           <Alert
             type="warning"
             showIcon
             style={{ marginTop: 8 }}
-            message="尚未设置初始资金：点右上角「管理资金」记录初始入金后，交易计划才能自动计算仓位比例"
+            message="尚未设置初始资金：点右上角「管理资金」记录初始入金（可选人民币/美元/USDT）后，交易计划才能自动计算仓位比例"
           />
+        ) : (
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+            美元/USDT 按 1:1 合并统计；数字货币持仓规模按 USDT 金额计入美元资金。
+          </Typography.Text>
         )}
       </Card>
       <Card
@@ -493,7 +528,7 @@ export default function TradePlans() {
                           {p.planned_invested != null && (
                             <div>
                               <Typography.Text type="secondary">占用资金：</Typography.Text>
-                              ¥{fmtMoney(p.planned_invested)}
+                              {fmtCur(p.planned_invested, tradeCurrency(p.instrument_type))}
                               <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
                                 单笔仓位：
                               </Typography.Text>
@@ -651,8 +686,12 @@ export default function TradePlans() {
             <Col span={6}>
               <Form.Item
                 name="planned_volume"
-                label="计划手数"
-                tooltip="A股：1手=100股；商品期货：1手按合约乘数计算；数字货币：填写USDT金额"
+                label={fInstrType === '数字货币' ? '持仓规模(USDT)' : '计划手数'}
+                tooltip={
+                  fInstrType === '数字货币'
+                    ? '数字货币：填写 USDT 持仓规模金额（如开仓 5万 USDT 填 50000），占用资金 = 该金额'
+                    : 'A股：1手=100股；商品期货：1手按合约乘数计算'
+                }
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="可留空" />
               </Form.Item>
@@ -682,7 +721,9 @@ export default function TradePlans() {
               {livePosition.invested != null ? (
                 <>
                   <Typography.Text type="secondary">占用资金：</Typography.Text>
-                  <Typography.Text strong>¥{fmtMoney(livePosition.invested)}</Typography.Text>
+                  <Typography.Text strong>
+                    {fmtCur(livePosition.invested, livePosition.currency)}
+                  </Typography.Text>
                   <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
                     单笔仓位：
                   </Typography.Text>
@@ -691,11 +732,14 @@ export default function TradePlans() {
                       {livePosition.ratio.toFixed(2)}%
                     </Typography.Text>
                   ) : (
-                    <Typography.Text type="warning">未设置初始资金，无法计算</Typography.Text>
+                    <Typography.Text type="warning">
+                      未设置
+                      {livePosition.currency === 'USD' ? '美元/USDT' : '人民币'}资金，无法计算
+                    </Typography.Text>
                   )}
                 </>
               ) : (
-                <Typography.Text type="secondary">输入入场价与手数后自动计算占用资金与仓位比例</Typography.Text>
+                <Typography.Text type="secondary">输入手数后自动计算占用资金与仓位比例</Typography.Text>
               )}
             </div>
           )}
@@ -743,21 +787,21 @@ export default function TradePlans() {
         open={flowModalOpen}
         onCancel={() => setFlowModalOpen(false)}
         footer={null}
-        width={680}
+        width={760}
       >
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="账户总资金由流水自动重算。初始资金日期可任意指定（如开始交易那天）；中途入金/出金追加记录即可，历史任意日期资金可精确回溯。"
+          message="账户总资金按币种分别累计（人民币 / 美元），美元与 USDT 按 1:1 合并。初始资金日期可任意指定（如开始交易那天）；中途入金/出金追加记录即可，历史任意日期资金可精确回溯。"
         />
         <Form form={flowForm} layout="inline" style={{ marginBottom: 12 }} onFinish={handleFlowSubmit}>
           <Form.Item name="flow_date" label="日期" rules={[{ required: true }]}>
-            <DatePicker style={{ width: 140 }} />
+            <DatePicker style={{ width: 130 }} />
           </Form.Item>
           <Form.Item name="flow_type" label="类型" rules={[{ required: true }]}>
             <Select
-              style={{ width: 130 }}
+              style={{ width: 110 }}
               options={[
                 { value: 'initial', label: '初始资金' },
                 { value: 'deposit', label: '入金' },
@@ -765,11 +809,20 @@ export default function TradePlans() {
               ]}
             />
           </Form.Item>
+          <Form.Item name="currency" label="币种" rules={[{ required: true }]}>
+            <Select
+              style={{ width: 110 }}
+              options={[
+                { value: 'CNY', label: '人民币 ¥' },
+                { value: 'USD', label: '美元/USDT $' },
+              ]}
+            />
+          </Form.Item>
           <Form.Item name="amount" label="金额" rules={[{ required: true, message: '请输入金额' }]}>
-            <InputNumber style={{ width: 130 }} min={0.01} precision={2} />
+            <InputNumber style={{ width: 110 }} min={0.01} precision={2} />
           </Form.Item>
           <Form.Item name="note" label="备注">
-            <Input placeholder="可选" style={{ width: 140 }} />
+            <Input placeholder="可选" style={{ width: 110 }} />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={flowSaving}>
             添加
@@ -792,12 +845,18 @@ export default function TradePlans() {
                 <Tag color={f.flow_type === 'initial' ? 'purple' : f.flow_type === 'deposit' ? 'green' : 'red'}>
                   {f.flow_type === 'initial' ? '初始' : f.flow_type === 'deposit' ? '入金' : '出金'}
                 </Tag>
+                <Tag color={f.currency === 'USD' ? 'gold' : 'blue'}>
+                  {f.currency === 'USD' ? 'USD' : 'CNY'}
+                </Tag>
                 <Typography.Text>{f.flow_date}</Typography.Text>
                 <Typography.Text strong style={{ color: f.flow_type === 'withdraw' ? '#3f8600' : '#cf1322' }}>
-                  {f.flow_type === 'withdraw' ? '-' : '+'}¥{fmtMoney(f.amount)}
+                  {f.flow_type === 'withdraw' ? '-' : '+'}
+                  {CURRENCY_META[f.currency]?.symbol ?? '¥'}
+                  {fmtMoney(f.amount)}
                 </Typography.Text>
                 <Typography.Text type="secondary">
-                  余额 ¥{fmtMoney(f.balance_after)}
+                  余额 {CURRENCY_META[f.currency]?.symbol ?? '¥'}
+                  {fmtMoney(f.balance_after)}
                 </Typography.Text>
                 {f.note && <Typography.Text type="secondary">（{f.note}）</Typography.Text>}
               </Space>

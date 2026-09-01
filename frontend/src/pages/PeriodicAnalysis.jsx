@@ -314,52 +314,84 @@ export default function PeriodicAnalysis() {
             />
           </Card>
         </Col>
-        <Col span={3}>
+        <Col span={6}>
           <Card size="small">
             <Statistic
               title={
                 <span>
                   阶段期初资金
-                  <Tooltip title="阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏">
+                  <Tooltip title="各币种阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏。CNY=人民币账户；USD=美元账户（USDT 1:1 并入）">
                     <QuestionCircleOutlined
                       style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
                     />
                   </Tooltip>
                 </span>
               }
-              value={metrics?.start_balance ?? '-'}
-              prefix={metrics?.start_balance != null ? '¥' : ''}
-              precision={2}
+              value={Object.keys(metrics?.start_balances ?? {}).length ? '' : '-'}
+              styles={{ content: { fontSize: 14 } }}
             />
+            <div style={{ marginTop: 4, fontSize: 13, lineHeight: '22px' }}>
+              {metrics?.start_balances && Object.keys(metrics.start_balances).length > 0 ? (
+                ['CNY', 'USD'].map(
+                  (cur) =>
+                    metrics.start_balances[cur] != null && (
+                      <div key={cur}>
+                        <span style={{ color: '#999' }}>
+                          {cur === 'CNY' ? '人民币' : '美元/USDT'}：
+                        </span>
+                        <strong>
+                          {cur === 'CNY' ? '¥' : '$'}
+                          {metrics.start_balances[cur].toLocaleString('zh-CN', {
+                            maximumFractionDigits: 2,
+                          })}
+                        </strong>
+                      </div>
+                    )
+                )
+              ) : (
+                <span style={{ color: '#999' }}>未设置资金</span>
+              )}
+            </div>
           </Card>
         </Col>
-        <Col span={3}>
+        <Col span={6}>
           <Card size="small">
             <Statistic
               title={
                 <span>
                   阶段期末资金
-                  <Tooltip title="阶段期初资金 + 该阶段交易盈亏（含手续费按平仓价计，与阶段总收益率口径一致）">
+                  <Tooltip title="各币种期初资金 + 该币种阶段交易盈亏（与阶段总收益率口径一致）">
                     <QuestionCircleOutlined
                       style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
                     />
                   </Tooltip>
                 </span>
               }
-              value={metrics?.end_balance ?? '-'}
-              prefix={metrics?.end_balance != null ? '¥' : ''}
-              precision={2}
-              styles={{
-                content: {
-                  color:
-                    metrics?.start_balance != null &&
-                    metrics?.end_balance != null &&
-                    metrics.end_balance >= metrics.start_balance
-                      ? '#cf1322'
-                      : '#3f8600',
-                },
-              }}
+              value={Object.keys(metrics?.end_balances ?? {}).length ? '' : '-'}
+              styles={{ content: { fontSize: 14 } }}
             />
+            <div style={{ marginTop: 4, fontSize: 13, lineHeight: '22px' }}>
+              {metrics?.end_balances && Object.keys(metrics.end_balances).length > 0 ? (
+                ['CNY', 'USD'].map((cur) => {
+                  const sb = metrics.start_balances?.[cur]
+                  const eb = metrics.end_balances[cur]
+                  if (eb == null || sb == null) return null
+                  return (
+                    <div key={cur}>
+                      <span style={{ color: '#999' }}>
+                        {cur === 'CNY' ? '人民币' : '美元/USDT'}：
+                      </span>
+                      <strong style={{ color: eb >= sb ? '#cf1322' : '#3f8600' }}>
+                        {cur === 'CNY' ? '¥' : '$'}
+                        {eb.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
+                      </strong>
+                    </div>
+                  )
+                })
+              ) : (
+                <span style={{ color: '#999' }}>未设置资金</span>
+              )}
+            </div>
           </Card>
         </Col>
       </Row>
@@ -463,15 +495,6 @@ export default function PeriodicAnalysis() {
               <Statistic
                 title="夏普比率"
                 value={metrics?.sharpe_ratio ?? '-'}
-                precision={2}
-              />
-            </Card>
-          </Col>
-          <Col span={8}>
-            <Card size="small">
-              <Statistic
-                title="总手数"
-                value={summary?.total_volume ?? 0}
                 precision={2}
               />
             </Card>

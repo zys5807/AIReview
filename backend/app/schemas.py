@@ -465,9 +465,14 @@ class TradePlanExecuteIn(BaseModel):
 
 
 # ---------- 账户资金流水 ----------
+# 币种：CNY 人民币 / USD 美元（USDT 1:1 并入 USD）
+Currency = Literal["CNY", "USD"]
+
+
 class AccountFlowCreate(BaseModel):
     flow_date: date  # 资金变动日期（可任意指定，补录历史）
     flow_type: Literal["initial", "deposit", "withdraw"] = "initial"
+    currency: Currency = "CNY"  # 币种（默认人民币）
     amount: float = Field(..., gt=0, description="变动金额（正数）")
     note: str = ""
 
@@ -475,6 +480,7 @@ class AccountFlowCreate(BaseModel):
 class AccountFlowUpdate(BaseModel):
     flow_date: date | None = None
     flow_type: Literal["initial", "deposit", "withdraw"] | None = None
+    currency: Currency | None = None
     amount: float | None = Field(None, gt=0)
     note: str | None = None
 
@@ -485,6 +491,7 @@ class AccountFlowOut(BaseModel):
     id: int
     flow_date: date
     flow_type: str
+    currency: str = "CNY"
     amount: float
     balance_after: float | None = None
     note: str = ""

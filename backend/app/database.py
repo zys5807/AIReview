@@ -51,6 +51,8 @@ _MIGRATIONS = [
     ("screenshots", "user_id", "INTEGER DEFAULT NULL"),
     ("trading_systems", "user_id", "INTEGER DEFAULT NULL"),
     ("review_reports", "user_id", "INTEGER DEFAULT NULL"),
+    # V1.006.3 账户流水币种（CNY 人民币 / USD 美元，USDT 1:1 并入 USD）
+    ("account_flows", "currency", "VARCHAR(10) DEFAULT 'CNY'"),
 ]
 
 # 迁移后把历史 NULL 统一补为空字符串
