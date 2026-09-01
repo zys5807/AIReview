@@ -10,15 +10,19 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, BASE_DIR
 from .database import ensure_schema
-from .routers import accounts, analysis, auth, backup, importer, reviews, screenshots, settings, trade_plans, trades, trading_systems
+from .routers import accounts, analysis, auth, backup, futures, importer, reviews, screenshots, settings, trade_plans, trades, trading_systems
+from .services import futures_sync
 
 # 创建数据表 + 轻量迁移（补新列）
 ensure_schema()
 
+# 后台同步期货保证金率（启动立即同步 + 每日 16:30，失败静默）
+futures_sync.start_background_sync()
+
 app = FastAPI(
     title="AIReviewSystem",
     description="AI交易复盘系统 - 单机/局域网多用户版",
-    version="1.0.6",
+    version="1.0.7",
 )
 
 # CORS：允许前端开发服务器访问
@@ -45,6 +49,7 @@ app.include_router(importer.router)
 app.include_router(backup.router)
 app.include_router(settings.router)
 app.include_router(accounts.router)
+app.include_router(futures.router)
 
 
 @app.get("/api/health", tags=["系统"])
@@ -52,7 +57,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "AIReviewSystem",
-        "version": "1.0.6",
+        "version": "1.0.7",
         "frontend_built": _HAS_DIST,
     }
 

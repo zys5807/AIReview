@@ -187,6 +187,10 @@ class TradeBase(BaseModel):
     remaining_volume: float = 0.0  # 当前未平仓数量（0=已平仓）
     pnl: float | None = None
     invested_capital: float | None = None  # 占用资金/本金（收益率分母）
+    # V1.007 品种参数快照（保存时固化，用于审计追溯这笔交易当时用的参数）
+    matched_variety: str | None = None  # 匹配到的标准品种名（如 沪铝）
+    multiplier: float | None = None  # 合约乘数
+    margin_rate: float | None = None  # 保证金率 0.17
     notes: str = ""
     psychology_notes: str = ""  # 持仓过程中的心理状态（手工填写）
     timeframe_notes: str = ""  # 各周期判断依据（手填）
@@ -246,8 +250,13 @@ class CapitalCalcIn(BaseModel):
 
 class CapitalCalcOut(BaseModel):
     invested_capital: float | None = None
-    matched_name: str | None = None  # 匹配到的标准品种名；None=未识别（按名义本金估算）
-    multiplier: float = 1.0  # 命中的合约乘数
+    matched: bool = False  # 品种是否识别（False=未识别，占用资金留空强制手填）
+    matched_name: str | None = None  # 匹配到的标准品种名；None=未识别
+    variety_code: str | None = None  # 品种代码（字母前缀，如 AL）
+    multiplier: float | None = None  # 命中的合约乘数
+    margin_rate: float | None = None  # 保证金率 0.17
+    margin_source: str = ""  # contract/eastmoney/manual/builtin
+    margin_label: str = ""  # 展示文案："东财 09-01 同步 17%" 等
 
 
 class TradeUpdate(BaseModel):

@@ -105,6 +105,21 @@ export const deleteTrade = (id) => client.delete(`/api/trades/${id}`).then((r) =
 export const calcTradeCapital = (data) =>
   client.post('/api/trades/calc-capital', data).then((r) => r.data)
 
+// ---------- 期货参数（V1.007） ----------
+export const listFuturesConfig = () => client.get('/api/futures/config').then((r) => r.data)
+export const getFuturesStatus = () => client.get('/api/futures/status').then((r) => r.data)
+export const syncFutures = () => client.post('/api/futures/sync').then((r) => r.data)
+export const createFuturesVariety = (data) =>
+  client.post('/api/futures/varieties', data).then((r) => r.data)
+export const updateFuturesVariety = (code, data) =>
+  client.put(`/api/futures/varieties/${code}`, data).then((r) => r.data)
+export const deleteFuturesVariety = (code) =>
+  client.delete(`/api/futures/varieties/${code}`).then((r) => r.data)
+export const createFuturesContract = (data) =>
+  client.post('/api/futures/contracts', data).then((r) => r.data)
+export const deleteFuturesContract = (code) =>
+  client.delete(`/api/futures/contracts/${code}`).then((r) => r.data)
+
 // 品种分类统计
 export const getTradeStats = () => client.get('/api/trades/stats').then((r) => r.data)
 

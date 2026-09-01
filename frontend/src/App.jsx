@@ -9,6 +9,7 @@ import PeriodicAnalysis from './pages/PeriodicAnalysis'
 import TradePlans from './pages/TradePlans'
 import Login from './pages/Login'
 import UserManage from './pages/UserManage'
+import FuturesConfig from './pages/FuturesConfig'
 
 // 路由守卫：未登录跳转登录页
 function RequireAuth({ children }) {
@@ -44,6 +45,7 @@ export default function App() {
             <Route path="systems" element={<TradingSystems />} />
             <Route path="analysis" element={<PeriodicAnalysis />} />
             <Route path="users" element={<UserManage />} />
+            <Route path="futures" element={<FuturesConfig />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -38,6 +38,9 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
   const pnl = Form.useWatch('pnl', form)
   const fee = Form.useWatch('fee', form)
   const investedCapital = Form.useWatch('invested_capital', form)
+  const instrumentType = Form.useWatch('instrument_type', form)
+  const instrumentCode = Form.useWatch('instrument_code', form)
+  const instrumentName = Form.useWatch('instrument_name', form)
   const netPnl = pnl != null ? pnl - (fee || 0) : null
   const returnRate =
     netPnl != null && investedCapital
@@ -58,7 +61,7 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
       volume,
     })
       .then((r) => {
-        setMatchInfo({ matched: r.matched_name, multiplier: r.multiplier })
+        setMatchInfo(r)
         if (r.invested_capital != null && !manualCapitalRef.current) {
           form.setFieldValue('invested_capital', r.invested_capital)
         }
@@ -97,6 +100,16 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
   }, [])
 
   const handleSubmit = async (values) => {
+    // 商品期货未识别品种：占用资金必须手动填写（避免收益率分母失真）
+    if (
+      values.instrument_type === '商品期货' &&
+      matchInfo &&
+      !matchInfo.matched &&
+      !values.invested_capital
+    ) {
+      message.warning('未识别品种，请先手动填写占用资金，或修改品种代码/名称使其可识别')
+      return
+    }
     setSaving(true)
     try {
       const payload = {
@@ -274,19 +287,35 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
             <Form.Item
               name="invested_capital"
               label="占用资金"
-              tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×手数×100；数字货币=USDT持仓规模金额），也可手动修改"
+              tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×保证金率；A股=价×手数×100；数字货币=USDT持仓规模金额），也可手动修改"
             >
               <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="自动计算" />
             </Form.Item>
-            {matchInfo && (
-              <div style={{ fontSize: 12, marginTop: -18, marginBottom: 8 }}>
+            {instrumentType === '商品期货' && matchInfo && (
+              <div
+                style={{
+                  fontSize: 12,
+                  marginTop: -18,
+                  marginBottom: 8,
+                  lineHeight: '18px',
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: matchInfo.matched ? 'rgba(82,196,26,0.08)' : 'rgba(250,140,22,0.1)',
+                }}
+              >
                 {matchInfo.matched ? (
-                  <span style={{ color: '#52c41a' }}>
-                    ✅ 已识别品种：{matchInfo.matched}（乘数 {matchInfo.multiplier}）
+                  <span style={{ color: '#389e0d' }}>
+                    ✅ {matchInfo.matched_name}
+                    {matchInfo.variety_code ? ` ${matchInfo.variety_code}` : ''} · 乘数{' '}
+                    {matchInfo.multiplier}
+                    <br />
+                    <span style={{ color: '#888' }}>
+                      保证金率 {matchInfo.margin_label}
+                    </span>
                   </span>
                 ) : (
-                  <span style={{ color: '#fa8c16' }}>
-                    ⚠️ 未识别品种，已按名义本金估算，建议手动核对
+                  <span style={{ color: '#d46b08' }}>
+                    ⚠️ 未识别品种「{instrumentCode || instrumentName || '?'}」，请手动填写占用资金
                   </span>
                 )}
               </div>

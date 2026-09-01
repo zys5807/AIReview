@@ -44,6 +44,10 @@ _MIGRATIONS = [
     ("trades", "import_revenue", "FLOAT DEFAULT 0"),
     # V1.006 占用资金（收益率分母，自动按品种计算可手动修改）
     ("trades", "invested_capital", "FLOAT DEFAULT NULL"),
+    # V1.007 品种参数快照（审计追溯：这笔交易当时用的乘数/保证金率）
+    ("trades", "matched_variety", "VARCHAR(50) DEFAULT NULL"),
+    ("trades", "multiplier", "FLOAT DEFAULT NULL"),
+    ("trades", "margin_rate", "FLOAT DEFAULT NULL"),
     # V1.006 交易计划仓位比例快照
     ("trade_plans", "planned_invested", "FLOAT DEFAULT NULL"),
     ("trade_plans", "position_ratio", "FLOAT DEFAULT NULL"),

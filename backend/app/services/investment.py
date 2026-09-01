@@ -4,9 +4,10 @@
 
 口径说明：
 - 商品期货：占用资金 = 开仓价 × 手数 × 合约乘数 × 保证金率
-  - 合约乘数按品种代码前缀 / 中文名（别名表+标准化+唯一性校验）匹配内置表；
-    未匹配返回 None（前端提示，退化为名义本金并允许手动修改）
-  - 保证金率统一按 10% 估算（FUTURES_DEFAULT_MARGIN），用户可在表单手动修改占用资金覆盖
+  - 合约乘数按品种代码前缀 / 中文名（别名表+标准化+唯一性校验）匹配内置表（FUTURES_MULTIPLIERS）；
+    新品种可经管理员补录到 futures_config（multiplier 字段）
+  - 保证金率优先级：futures_config 合约级覆盖 > 品种级（东财每日同步 / 手动配置）> 内置默认 10%
+  - 品种未识别 → 返回 None（前端提示"未识别品种，请手动填写占用资金"，保存时阻止提交）
 - A股：手数字段填"手"，占用资金 = 开仓价 × 手数 × 100（1手=100股，全额买入）
 - 数字货币：手数字段填 USDT 持仓规模金额（如开仓 5万 USDT 填 50000），
   占用资金 = 该金额本身（1:1，USDT 并入 USD 币种统计）
@@ -17,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from ..models import FuturesConfig
+
 # 常见商品期货合约乘数（吨/手 或 克/手、千克/手），按合约代码前缀匹配
 FUTURES_MULTIPLIERS: dict[str, tuple[str, float]] = {
     # 上期所（SHFE）
@@ -26,7 +29,7 @@ FUTURES_MULTIPLIERS: dict[str, tuple[str, float]] = {
     "AG": ("沪银", 15), "SS": ("不锈钢", 5), "AO": ("氧化铝", 20),
     "FU": ("燃油", 10), "BU": ("沥青", 10), "RU": ("橡胶", 10),
     "NR": ("20号胶", 10), "SP": ("纸浆", 10), "BR": ("丁二烯橡胶", 10),
-    "WR": ("线材", 10), "AD": ("铸造铝合金", 10),
+    "WR": ("线材", 10), "AD": ("铸造铝合金", 10), "OP": ("胶版纸", 40),
     # 大商所（DCE）
     "JM": ("焦煤", 60), "J": ("焦炭", 100), "I": ("铁矿", 100),
     "L": ("塑料", 5), "PP": ("聚丙烯", 5), "V": ("PVC", 5),
@@ -83,6 +86,7 @@ FUTURES_ALIASES: dict[str, list[str]] = {
     "BR": ["丁二烯橡胶", "顺丁橡胶"],
     "WR": ["线材", "盘条", "高线"],
     "AD": ["铸造铝合金", "铝合金锭"],
+    "OP": ["胶版纸", "双胶纸", "胶版印刷纸"],
     # 大商所（DCE）
     "JM": ["焦煤"],
     "J": ["焦炭", "冶金焦"],
@@ -240,10 +244,12 @@ def compute_invested_capital(
     instrument_name: str = "",
     entry_price: float | None = None,
     volume: float = 1.0,
+    db=None,
 ) -> float | None:
     """计算一笔交易的占用资金（自动默认值）
 
-    返回 None 表示无法计算（缺价格/数量）
+    返回 None 表示无法计算（缺价格/数量，或商品期货品种未识别需手填）
+    db: 可选 Session，用于查 futures_config 保证金率/用户补录乘数
     """
     # 数字货币：volume 即 USDT 持仓规模，占用资金 = volume，不依赖价格
     if instrument_type == "数字货币":
@@ -254,13 +260,104 @@ def compute_invested_capital(
         return None
     base = entry_price * volume  # 名义本金（volume=手数/数量口径）
     if instrument_type == "商品期货":
-        mult, _ = resolve_multiplier(instrument_code, instrument_name)
-        return round(base * mult * FUTURES_DEFAULT_MARGIN, 2)
+        info = resolve_instrument(db, instrument_code, instrument_name)
+        if not info["matched"]:
+            # 品种未识别 → 留空强制手填（避免收益率分母失真）
+            return None
+        return round(base * info["multiplier"] * info["margin_rate"], 2)
     if instrument_type == "A股":
         # 手数字段按"手"填写（1手=100股），折算股数后全额买入
         return round(entry_price * volume * A_SHARE_LOT_SIZE, 2)
     # 其他类型：默认按名义本金
     return round(base, 2)
+
+
+def resolve_instrument(db=None, code: str = "", name: str = "") -> dict:
+    """统一识别入口：品种 / 乘数 / 保证金率完整信息（V1.007）
+
+    返回:
+    {
+        "matched": bool,           # 品种是否识别（未识别时占用资金留空强制手填）
+        "variety_code": str|None,  # 品种代码 AL
+        "variety_name": str|None,  # 标准品种名 沪铝
+        "multiplier": float|None,  # 合约乘数
+        "margin_rate": float,      # 保证金率 0.17
+        "margin_source": str,      # contract / eastmoney / manual / builtin
+        "margin_label": str,       # 展示用："东财 09-01 同步 17%" 等
+    }
+
+    乘数优先级：内置静态表 → futures_config 用户补录（新品种）
+    保证金率优先级：futures_config 合约级覆盖 > 品种级(东财同步/手动) > 内置默认 10%
+    """
+    mult, std_name = resolve_multiplier(code, name)
+    variety_code = _extract_code_prefix(code)
+
+    margin_rate: float | None = None
+    margin_source = "builtin"
+    margin_date = ""
+
+    if db is not None:
+        # 1) 合约级保证金率覆盖（完整合约代码，如 AL2609）
+        if code:
+            c_upper = code.strip().upper()
+            cc = (
+                db.query(FuturesConfig)
+                .filter(FuturesConfig.level == "contract", FuturesConfig.code == c_upper)
+                .first()
+            )
+            if cc and cc.margin_rate:
+                margin_rate = cc.margin_rate
+                margin_source = "contract"
+        # 2) 品种级保证金率（东财同步 / 手动配置）
+        if margin_rate is None and variety_code:
+            vc = (
+                db.query(FuturesConfig)
+                .filter(FuturesConfig.level == "variety", FuturesConfig.code == variety_code)
+                .first()
+            )
+            if vc and vc.margin_rate:
+                margin_rate = vc.margin_rate
+                margin_source = vc.margin_source or "eastmoney"
+                margin_date = vc.updated_at.strftime("%m-%d") if vc.updated_at else ""
+            # 3) 用户补录乘数（新品种不在内置表）
+            if std_name is None and vc and vc.multiplier:
+                mult = vc.multiplier
+                std_name = vc.name or variety_code or None
+
+    if margin_rate is None:
+        margin_rate = FUTURES_DEFAULT_MARGIN
+
+    matched = std_name is not None
+    return {
+        "matched": matched,
+        "variety_code": variety_code,
+        "variety_name": std_name,
+        "multiplier": mult if matched else None,
+        "margin_rate": margin_rate if matched else None,
+        "margin_source": margin_source if matched else "",
+        "margin_label": _margin_label(margin_source, margin_rate, margin_date),
+    }
+
+
+def _extract_code_prefix(code: str) -> str | None:
+    """AL2609 -> AL；TA609 -> TA；A2609 -> A。无字母返回 None"""
+    if not code:
+        return None
+    alpha = "".join(ch for ch in code.strip().upper() if ch.isalpha())
+    return alpha or None
+
+
+def _margin_label(source: str, rate: float, margin_date: str = "") -> str:
+    """保证金率来源展示文案"""
+    pct = f"{rate * 100:.0f}%"
+    if source == "contract":
+        return f"手动覆盖 {pct}"
+    if source == "eastmoney":
+        d = f" {margin_date}" if margin_date else ""
+        return f"东财{d}同步 {pct}"
+    if source == "manual":
+        return f"手动配置 {pct}"
+    return f"默认估算 {pct}"
 
 
 def compute_return_rate(pnl: float | None, invested_capital: float | None) -> float | None:

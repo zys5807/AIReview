@@ -162,6 +162,10 @@ class Trade(Base):
     invested_capital: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # 占用资金/本金（收益率分母，自动按品种计算可手动修改）
+    # V1.007 品种参数快照（审计追溯：这笔交易当时用的什么参数）
+    matched_variety: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 匹配到的标准品种名（如 沪铝）
+    multiplier: Mapped[float | None] = mapped_column(Float, nullable=True)  # 合约乘数（如 5）
+    margin_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # 保证金率（0.17 = 17%）
     # 导入合并状态
     remaining_volume: Mapped[float] = mapped_column(Float, default=0.0)  # 当前未平仓数量（0=已平仓）
     import_cost: Mapped[float] = mapped_column(Float, default=0.0)  # 导入累计买入成本
@@ -335,3 +339,28 @@ class AccountFlow(Base):
     balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)  # 该笔后账户总资金（自动重算）
     note: Mapped[str] = mapped_column(String(200), default="")  # 备注
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class FuturesConfig(Base):
+    """期货品种参数配置（合约乘数 + 保证金率）
+
+    level 区分两级：
+    - "variety"（品种级默认）：code=AL，乘数 5，保证金率随东财每日同步更新
+    - "contract"（合约级覆盖）：code=AL2609，个别合约单独费率（覆盖品种默认）
+    查询优先级：合约级 > 品种级 > 内置默认（investment.FUTURES_DEFAULT_MARGIN）
+    乘数以内置静态表为基准（FUTURES_MULTIPLIERS），本表乘数仅供补录覆盖。
+    """
+
+    __tablename__ = "futures_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    level: Mapped[str] = mapped_column(String(10), default="variety", index=True)  # variety / contract
+    exchange: Mapped[str] = mapped_column(String(30), default="")  # 上期所/大商所/郑商所/广期所/能源中心/中金所
+    code: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # 品种代码 AL / 合约代码 AL2609
+    name: Mapped[str] = mapped_column(String(50), default="")  # 品种名 沪铝
+    multiplier: Mapped[float | None] = mapped_column(Float, nullable=True)  # 合约乘数（NULL=沿用内置表）
+    margin_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # 保证金率 0.17（NULL=沿用内置默认）
+    margin_source: Mapped[str] = mapped_column(String(30), default="")  # eastmoney / manual / builtin
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
