@@ -1,0 +1,135 @@
+import client from './client'
+
+// ---------- 认证 ----------
+export const register = (username, password) =>
+  client.post('/api/auth/register', { username, password }).then((r) => r.data)
+
+export const login = (username, password) =>
+  client.post('/api/auth/login', { username, password }).then((r) => r.data)
+
+export const fetchMe = () => client.get('/api/auth/me').then((r) => r.data)
+
+export const changePassword = (old_password, new_password) =>
+  client
+    .post('/api/auth/change-password', { old_password, new_password })
+    .then((r) => r.data)
+
+// 阶段复盘 AI 分析
+export const periodAiAnalysis = (data) =>
+  client.post('/api/analysis/period-ai', data).then((r) => r.data)
+
+// ---------- 交易计划 ----------
+export const listTradePlans = (params = {}) =>
+  client.get('/api/trade-plans', { params }).then((r) => r.data)
+
+export const createTradePlan = (data) =>
+  client.post('/api/trade-plans', data).then((r) => r.data)
+
+export const updateTradePlan = (id, data) =>
+  client.put(`/api/trade-plans/${id}`, data).then((r) => r.data)
+
+export const deleteTradePlan = (id) =>
+  client.delete(`/api/trade-plans/${id}`).then((r) => r.data)
+
+export const executeTradePlan = (id, linked_trade_id) =>
+  client.post(`/api/trade-plans/${id}/execute`, { linked_trade_id }).then((r) => r.data)
+
+export const cancelTradePlan = (id) =>
+  client.post(`/api/trade-plans/${id}/cancel`).then((r) => r.data)
+
+export const reviewTradePlan = (id) =>
+  client.post(`/api/trade-plans/${id}/review`).then((r) => r.data)
+
+export const compareTradePlan = (id) =>
+  client.post(`/api/trade-plans/${id}/comparison`).then((r) => r.data)
+
+// 用户管理（管理员）
+export const listUsers = () => client.get('/api/users').then((r) => r.data)
+
+export const setUserStatus = (id, is_active) =>
+  client.patch(`/api/users/${id}`, { is_active }).then((r) => r.data)
+
+// ---------- 截图 ----------
+export const uploadScreenshot = (file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post('/api/screenshots', form).then((r) => r.data)
+}
+
+export const listScreenshots = () => client.get('/api/screenshots').then((r) => r.data)
+
+export const deleteScreenshot = (id) =>
+  client.delete(`/api/screenshots/${id}`).then((r) => r.data)
+
+// 孤儿截图（未被任何交易引用、上传超过N天）
+export const listOrphanScreenshots = (days = 7) =>
+  client.get('/api/screenshots/orphans', { params: { days } }).then((r) => r.data)
+
+export const cleanupOrphanScreenshots = (days = 7) =>
+  client.post('/api/screenshots/cleanup-orphans', null, { params: { days } }).then((r) => r.data)
+
+// K线识别（OCR可选；未配置OCR时仍能识别颜色/箭头/形状）
+export const recognizeScreenshot = (id) =>
+  client.post(`/api/screenshots/${id}/recognize`).then((r) => r.data)
+
+// ---------- 交易记录 ----------
+export const createTrade = (data) => client.post('/api/trades', data).then((r) => r.data)
+
+export const listTrades = (params = {}) =>
+  client.get('/api/trades', { params }).then((r) => r.data)
+
+export const getTrade = (id) => client.get(`/api/trades/${id}`).then((r) => r.data)
+
+export const updateTrade = (id, data) =>
+  client.put(`/api/trades/${id}`, data).then((r) => r.data)
+
+export const deleteTrade = (id) => client.delete(`/api/trades/${id}`).then((r) => r.data)
+
+// 品种分类统计
+export const getTradeStats = () => client.get('/api/trades/stats').then((r) => r.data)
+
+// ---------- 交易系统 ----------
+export const createTradingSystem = (data) =>
+  client.post('/api/trading-systems', data).then((r) => r.data)
+
+export const listTradingSystems = () =>
+  client.get('/api/trading-systems').then((r) => r.data)
+
+export const updateTradingSystem = (id, data) =>
+  client.put(`/api/trading-systems/${id}`, data).then((r) => r.data)
+
+export const deleteTradingSystem = (id) =>
+  client.delete(`/api/trading-systems/${id}`).then((r) => r.data)
+
+// ---------- 交割单导入 ----------
+export const parseImportFile = (file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return client.post('/api/import/parse', fd).then((r) => r.data)
+}
+
+export const executeImport = (file_id, mapping) =>
+  client.post('/api/import/execute', { file_id, mapping }).then((r) => r.data)
+
+// ---------- 复盘报告 ----------
+export const analyzeTrade = (tradeId) =>
+  client.post(`/api/trades/${tradeId}/analyze`).then((r) => r.data)
+
+export const listReports = (tradeId) =>
+  client.get(`/api/trades/${tradeId}/reports`).then((r) => r.data)
+
+export const getReport = (reportId) =>
+  client.get(`/api/reports/${reportId}`).then((r) => r.data)
+
+// ---------- 阶段复盘 ----------
+export const getPeriodStats = (params = {}) =>
+  client.get('/api/analysis/period', { params }).then((r) => r.data)
+
+export const getScoreTrend = (params = {}) =>
+  client.get('/api/analysis/scores', { params }).then((r) => r.data)
+
+// ---------- 应用设置（API 配置，软件内管理） ----------
+export const getLlmSettings = () => client.get('/api/settings/llm').then((r) => r.data)
+
+export const updateLlmSettings = (data) =>
+  client.put('/api/settings/llm', data).then((r) => r.data)

@@ -1,0 +1,40 @@
+# 敏感配置
+.env
+.env.*
+!.env.example
+
+# 工作区记忆/私人笔记（个人交易研究背景）
+.workbuddy/
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# 数据库与上传文件
+app.db
+backend/app.db
+backend/uploads/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# 构建产物（PyInstaller）
+backend/build/
+backend/dist/
+backend/dist_*/
+
+# 内部打包脚本（硬编码本地路径，对外无用）
+build_zips.py
+
+# 真实交易截图（tests/fixtures 下的 PNG 都是用户真实数据，绝不公开）
+backend/tests/fixtures/*.png
+
+# 历史打包/测试数据
+*.zip
+merge*.csv
+test_*.py
+
+# 日志
+*.log
