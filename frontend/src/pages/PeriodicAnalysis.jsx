@@ -346,6 +346,36 @@ export default function PeriodicAnalysis() {
           <Col span={3}>
             <Card size="small">
               <Statistic
+                title="阶段期初资金"
+                value={metrics?.start_balance ?? '-'}
+                prefix={metrics?.start_balance != null ? '¥' : ''}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="阶段期末资金"
+                value={metrics?.end_balance ?? '-'}
+                prefix={metrics?.end_balance != null ? '¥' : ''}
+                precision={2}
+                styles={{
+                  content: {
+                    color:
+                      metrics?.start_balance != null &&
+                      metrics?.end_balance != null &&
+                      metrics.end_balance >= metrics.start_balance
+                        ? '#cf1322'
+                        : '#3f8600',
+                  },
+                }}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
                 title="平均单笔盈亏比"
                 value={metrics?.avg_pl_ratio ?? '-'}
                 precision={2}

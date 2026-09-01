@@ -66,10 +66,16 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
 
     资金类指标依赖账户资金流水（balance_at），无资金记录时返回 None，
     前端应提示"请先设置初始资金"。平均单笔盈亏比不依赖资金。
+    期初资金 = 阶段首日账户资金（流水口径）；期末资金 = 期初资金 + 阶段总盈亏（与收益率口径一致）。
     """
     count = len(trades)
+    # ---- 期初资金（阶段首日流水余额），无流水时 None
+    start_balance = balance_at(db, user_id, start.date())
+    has_capital = start_balance is not None and start_balance > 0
     if count == 0:
         return {
+            "start_balance": start_balance,
+            "end_balance": start_balance,
             "avg_pl_ratio": None,
             "avg_daily_position_pct": None,
             "total_return_pct": None,
@@ -77,7 +83,7 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
             "max_weekly_drawdown_pct": None,
             "calmar_ratio": None,
             "sharpe_ratio": None,
-            "has_capital": False,
+            "has_capital": has_capital,
         }
 
     # ---- 1. 平均单笔盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致）
@@ -94,10 +100,7 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
         avg_pl_ratio = None
 
     # ---- 资金基准：期初资金（start 当日）
-    initial = balance_at(db, user_id, start.date())
-    has_capital = initial is not None and initial > 0
-
-    # ---- 按日盈亏
+    initial = start_balance    # ---- 按日盈亏
     by_day_pnl: dict = defaultdict(float)
     for t in trades:
         if t.pnl is not None:
@@ -200,7 +203,12 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
         if ratios:
             avg_daily_position_pct = round(sum(ratios) / len(ratios) * 100, 2)
 
+    # ---- 期末资金 = 期初资金 + 阶段总盈亏（与 total_return_pct 分子一致）
+    end_balance = round(start_balance + total_pnl, 2) if has_capital else None
+
     return {
+        "start_balance": start_balance,
+        "end_balance": end_balance,
         "avg_pl_ratio": avg_pl_ratio,
         "avg_daily_position_pct": avg_daily_position_pct,
         "total_return_pct": total_return_pct,

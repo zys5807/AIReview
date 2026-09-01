@@ -7,8 +7,8 @@
   - 合约乘数按品种代码前缀 / 中文名（别名表+标准化+唯一性校验）匹配内置表；
     未匹配返回 None（前端提示，退化为名义本金并允许手动修改）
   - 保证金率统一按 10% 估算（FUTURES_DEFAULT_MARGIN），用户可在表单手动修改占用资金覆盖
-- A股：占用资金 = 开仓价 × 数量 × 1（交割单"成交股数"为股数口径，全额买入）
-- 数字货币：占用资金 = 开仓价 × 数量（默认 1 倍杠杆）
+- A股：手数字段填"手"，占用资金 = 开仓价 × 手数 × 100（1手=100股，全额买入）
+- 数字货币：手数字段填 USDT 金额，占用资金 = 开仓价 × 数量（默认 1 倍杠杆）
 
 自动计算仅作为默认值，最终以用户手动填写的 invested_capital 为准。
 """
@@ -134,6 +134,8 @@ _STRIP_RE = re.compile(r"[\s\d.\-—/～~·、,，]+", re.UNICODE)
 
 # 期货保证金率默认估算值（可被手动填写的占用资金覆盖）
 FUTURES_DEFAULT_MARGIN = 0.10
+# A股每手股数（手数字段按"手"填写，计算占用资金时 ×100 折算股数）
+A_SHARE_LOT_SIZE = 100
 
 
 def normalize_instrument_name(name: str) -> str:
@@ -212,13 +214,13 @@ def compute_invested_capital(
     """
     if not entry_price or entry_price <= 0 or not volume or volume <= 0:
         return None
-    base = entry_price * volume  # 名义本金
+    base = entry_price * volume  # 名义本金（volume=手数/数量口径）
     if instrument_type == "商品期货":
         mult, _ = resolve_multiplier(instrument_code, instrument_name)
         return round(base * mult * FUTURES_DEFAULT_MARGIN, 2)
     if instrument_type == "A股":
-        # 交割单口径为"成交股数"，全额买入；如手动按手录入请改占用资金或 *100
-        return round(base, 2)
+        # 手数字段按"手"填写（1手=100股），折算股数后全额买入
+        return round(entry_price * volume * A_SHARE_LOT_SIZE, 2)
     # 数字货币等：默认 1 倍杠杆
     return round(base, 2)
 

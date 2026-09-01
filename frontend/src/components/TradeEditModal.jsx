@@ -218,7 +218,11 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="volume" label="交易手数/数量">
+            <Form.Item
+              name="volume"
+              label="交易手数/数量"
+              extra="A股：1手=100股；商品期货：1手按合约乘数；数字货币：填写USDT金额"
+            >
               <InputNumber style={{ width: '100%' }} min={0} precision={2} />
             </Form.Item>
           </Col>
@@ -262,7 +266,7 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
             <Form.Item
               name="invested_capital"
               label="占用资金"
-              tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×股数；币=价×数量），也可手动修改"
+              tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×手数×100；币=价×数量），也可手动修改"
             >
               <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="自动计算" />
             </Form.Item>

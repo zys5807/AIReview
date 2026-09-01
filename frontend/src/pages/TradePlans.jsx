@@ -649,7 +649,11 @@ export default function TradePlans() {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="planned_volume" label="计划手数">
+              <Form.Item
+                name="planned_volume"
+                label="计划手数"
+                tooltip="A股：1手=100股；商品期货：1手按合约乘数计算；数字货币：填写USDT金额"
+              >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="可留空" />
               </Form.Item>
             </Col>
