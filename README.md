@@ -66,7 +66,7 @@ npm install
 npm run dev
 ```
 
-浏览器访问 http://localhost:5173 即可。
+浏览器访问 http://localhost:5173 即可（开发者环境，客户访问端口为8000）。
 
 ### 3. 配置 AI 模型
 
