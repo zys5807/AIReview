@@ -77,18 +77,6 @@ npm run dev
 
 配置保存到本地数据库，优先于 `backend/.env` 文件。切换服务商只需修改接口地址与模型名。
 
-## 打包为 exe
-
-```bash
-cd backend
-pyinstaller AIReviewSystem.spec --noconfirm --distpath dist_vXXX
-```
-
-打包产物在 `backend/dist_vXXX/AIReviewSystem/`。程序启动时按优先级读取配置：
-1. exe 同目录 `.env`（老用户兼容）
-2. `_internal/.env`（内置出厂默认值）
-3. 硬编码默认值
-
 ## 数据安全
 
 - 所有数据（交易记录、配置、上传截图）均保存在本地 `app.db` 与 `uploads/` 目录
