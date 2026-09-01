@@ -136,7 +136,8 @@ def _build_phase_messages(trades, systems_text: str, stats: dict | None = None) 
             f"方向={'做多' if t.direction == 'long' else '做空'} "
             f"入场={t.entry_price} 出场={t.exit_price} "
             f"手数={t.volume} "
-            f"盈亏={t.pnl if t.pnl is not None else '未填'} "
+            f"盈亏={round(t.pnl - (t.fee or 0), 2) if t.pnl is not None else '未填'}（净盈亏，已扣手续费）"
+            f"手续费={t.fee if t.fee is not None else 0} "
             f"初始止损={'已设置(' + str(t.stop_loss) + ')' if t.stop_loss else '未设置'}"
         )
         if t.trading_system_id:
@@ -189,8 +190,8 @@ def phase_summary(
     if not trades:
         raise AnalysisError("该时间段暂无交易记录")
 
-    # 系统精确计算本阶段统计（供 prompt 引用，避免 LLM 自行计算不稳定）
-    pnls = [t.pnl for t in trades if t.pnl is not None]
+    # 系统精确计算本阶段统计（供 prompt 引用，避免 LLM 自行计算不稳定）；盈亏按净额（pnl - fee）
+    pnls = [round(t.pnl - (t.fee or 0), 2) for t in trades if t.pnl is not None]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     total_pnl = round(sum(pnls), 2)

@@ -18,14 +18,22 @@ COMMON_ISSUE_KEYWORDS = [
 ]
 
 
+def _net_pnl(t: Trade) -> float | None:
+    """单笔净盈亏 = 盈亏金额 - 手续费（pnl 字段为毛盈亏不含手续费，统计口径统一扣减）"""
+    if t.pnl is None:
+        return None
+    return round(t.pnl - (t.fee or 0.0), 2)
+
+
 def _pnl_by_currency(trades: list[Trade]) -> dict[str, float]:
-    """阶段内每笔交易盈亏按币种归类：A股/商品期货→CNY，数字货币→USD"""
+    """阶段内每笔净盈亏按币种归类：A股/商品期货→CNY，数字货币→USD"""
     out: dict[str, float] = {}
     for t in trades:
-        if t.pnl is None:
+        net = _net_pnl(t)
+        if net is None:
             continue
         cur = USD if (t.instrument_type or "") == "数字货币" else CNY
-        out[cur] = out.get(cur, 0.0) + t.pnl
+        out[cur] = out.get(cur, 0.0) + net
     return {k: round(v, 2) for k, v in out.items()}
 
 
@@ -40,7 +48,7 @@ def _calc_summary(trades: list[Trade]) -> dict:
             "total_volume": 0,
             "total_fee": 0,  # 手续费汇总（仅展示，不参与指标计算）
         }
-    pnls = [t.pnl for t in trades if t.pnl is not None]
+    pnls = [v for v in (_net_pnl(t) for t in trades) if v is not None]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     gross_profit = sum(wins)
@@ -58,7 +66,7 @@ def _calc_summary(trades: list[Trade]) -> dict:
         if gross_loss > 0
         else (None if gross_profit == 0 else 999.0),
         "total_volume": round(sum(t.volume or 0 for t in trades), 2),
-        "total_fee": round(sum(t.fee or 0 for t in trades), 2),  # 手续费汇总（仅展示）
+        "total_fee": round(sum(t.fee or 0 for t in trades), 2),  # 手续费汇总（展示用，已计入净盈亏）
     }
 
 
@@ -108,8 +116,8 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
             "has_capital": has_capital,
         }
 
-    # ---- 1. 平均单笔盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致）
-    pnls = [t.pnl for t in trades if t.pnl is not None]
+    # ---- 1. 平均单笔盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致，均按净盈亏）
+    pnls = [v for v in (_net_pnl(t) for t in trades) if v is not None]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -127,10 +135,11 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
     main_cur = CNY if CNY in start_balances else next(iter(start_balances))
     by_day_pnl: dict = defaultdict(float)
     for t in trades:
-        if t.pnl is not None:
+        net = _net_pnl(t)
+        if net is not None:
             cur = USD if (t.instrument_type or "") == "数字货币" else CNY
             if cur == main_cur:
-                by_day_pnl[t.exit_time.date()] += t.pnl
+                by_day_pnl[t.exit_time.date()] += net
 
     # ---- 净值曲线（自然日展开，无交易日照记 0）
     days = (end.date() - start.date()).days + 1
@@ -338,7 +347,7 @@ def score_trend(
                 "date": t.exit_time.strftime("%Y-%m-%d"),
                 "instrument_type": t.instrument_type,
                 "instrument_name": t.instrument_name or t.instrument_code,
-                "pnl": t.pnl,
+                "pnl": _net_pnl(t),
                 "score": score,
             }
         )

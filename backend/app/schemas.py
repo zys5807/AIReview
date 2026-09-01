@@ -183,7 +183,7 @@ class TradeBase(BaseModel):
     scale_in_time: datetime | None = None
     scale_in_price: float | None = None
     scale_in_volume: float | None = None
-    fee: float | None = None  # 手续费（仅记录展示，不参与指标计算）
+    fee: float | None = None  # 手续费（计入净盈亏：统计盈亏 = pnl - fee）
     remaining_volume: float = 0.0  # 当前未平仓数量（0=已平仓）
     pnl: float | None = None
     invested_capital: float | None = None  # 占用资金/本金（收益率分母）

@@ -886,7 +886,7 @@ export default function TradePlans() {
               onChange={(v) => setExecOpen({ ...execOpen, linked_trade_id: v })}
               options={(trades || []).map((t) => ({
                 value: t.id,
-                label: `${t.entry_time?.slice?.(0, 10) || ''} ${t.instrument_name || t.instrument_code} ${t.direction === 'long' ? '做多' : '做空'} 盈亏:${t.pnl ?? '-'}`,
+                label: `${t.entry_time?.slice?.(0, 10) || ''} ${t.instrument_name || t.instrument_code} ${t.direction === 'long' ? '做多' : '做空'} 盈亏:${t.pnl != null ? (t.pnl - (t.fee || 0)) : '-'}`,
               }))}
             />
           </Form.Item>

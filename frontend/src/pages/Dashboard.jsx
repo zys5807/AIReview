@@ -273,12 +273,13 @@ export default function Dashboard() {
     {
       title: '盈亏',
       dataIndex: 'pnl',
-      render: (v) => {
-        if (v === null || v === undefined) return '-'
+      render: (v, r) => {
+        const net = v === null || v === undefined ? null : v - (r.fee || 0)
+        if (net === null) return '-'
         return (
-          <Typography.Text type={v >= 0 ? 'danger' : 'success'} strong>
-            {v >= 0 ? '+' : ''}
-            {v}
+          <Typography.Text type={net >= 0 ? 'danger' : 'success'} strong>
+            {net >= 0 ? '+' : ''}
+            {net}
           </Typography.Text>
         )
       },
@@ -288,8 +289,9 @@ export default function Dashboard() {
       key: 'returnRate',
       width: 90,
       render: (_, r) => {
-        if (r.pnl === null || r.pnl === undefined || !r.invested_capital) return '-'
-        const rate = (r.pnl / r.invested_capital) * 100
+        const net = r.pnl === null || r.pnl === undefined ? null : r.pnl - (r.fee || 0)
+        if (net === null || !r.invested_capital) return '-'
+        const rate = (net / r.invested_capital) * 100
         return (
           <Typography.Text type={rate >= 0 ? 'danger' : 'success'} strong>
             {rate >= 0 ? '+' : ''}

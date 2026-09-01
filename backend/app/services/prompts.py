@@ -120,7 +120,7 @@ def build_plan_comparison_messages(plan, trade, system_text: str) -> list[dict]:
         f"实际出场价：{trade.exit_price}",
         f"实际手数：{trade.volume}",
         f"实际止损位：{trade.stop_loss if trade.stop_loss is not None else '未设置'}",
-        f"实际盈亏：{trade.pnl if trade.pnl is not None else '未填'}",
+        f"实际盈亏：{round(trade.pnl - (trade.fee or 0), 2) if trade.pnl is not None else '未填'}（净盈亏，已扣手续费{trade.fee if trade.fee is not None else 0}）",
     ]
     if trade.timeframe_notes:
         lines.append(f"实际入场理由：{trade.timeframe_notes[:200]}")
@@ -203,7 +203,7 @@ def _trade_to_text(trade, system, screenshot_texts: list[str] | None = None) -> 
         f"出场价格：{trade.exit_price}",
         f"交易手数：{trade.volume}",
         f"初始止损位：{trade.stop_loss if trade.stop_loss is not None else '未设置'}",
-        f"盈亏金额：{trade.pnl if trade.pnl is not None else '未填写'}",
+        f"盈亏金额：{round(trade.pnl - (trade.fee or 0), 2) if trade.pnl is not None else '未填写'}（净盈亏，已扣手续费{trade.fee if trade.fee is not None else 0}）",
     ]
     # 加仓/减仓操作（多次；正数=加仓，负数=减仓），兼容旧单次加仓字段
     actions = sorted(trade.position_actions, key=lambda x: x.action_time) if trade.position_actions else []

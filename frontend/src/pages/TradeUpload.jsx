@@ -41,8 +41,10 @@ export default function TradeUpload() {
   // 占用资金：用户手动改过后不再自动覆盖
   const manualCapitalRef = useRef(false)
   const pnl = Form.useWatch('pnl', form)
+  const fee = Form.useWatch('fee', form)
   const investedCapital = Form.useWatch('invested_capital', form)
-  const returnRate = pnl != null && investedCapital ? (pnl / investedCapital) * 100 : null
+  const netPnl = pnl != null ? pnl - (fee || 0) : null
+  const returnRate = netPnl != null && investedCapital ? (netPnl / investedCapital) * 100 : null
   const [matchInfo, setMatchInfo] = useState(null)
 
   const instrumentType = Form.useWatch('instrument_type', form)
@@ -388,7 +390,11 @@ export default function TradeUpload() {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="pnl" label="盈亏金额">
+              <Form.Item
+                name="pnl"
+                label="盈亏金额"
+                tooltip="毛盈亏（不含手续费），统计时系统自动扣除手续费，以净盈亏计算收益率/胜率等指标"
+              >
                 <InputNumber style={{ width: '100%' }} precision={2} placeholder="可留空" />
               </Form.Item>
             </Col>
@@ -396,7 +402,7 @@ export default function TradeUpload() {
               <Form.Item
                 name="fee"
                 label="手续费"
-                tooltip="仅记录展示，不参与盈亏比等指标计算"
+                tooltip="计入净盈亏：统计盈亏 = 盈亏金额 - 手续费"
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="可留空" />
               </Form.Item>
@@ -426,7 +432,7 @@ export default function TradeUpload() {
               )}
             </Col>
             <Col span={8}>
-              <Form.Item label="收益率（盈亏÷占用资金）">
+              <Form.Item label="收益率（净盈亏÷占用资金）">
                 <div
                   style={{
                     lineHeight: '32px',

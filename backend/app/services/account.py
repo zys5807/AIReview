@@ -107,15 +107,17 @@ def equity_before(
 
     - 余额部分：balance_at 口径（截至 d 日含当日的出入金流水余额）
     - 盈亏部分：仅统计 exit_time < d（当日之前已平仓）且归属该币种的交易，
-      不含当日交易盈亏。币种归类：A股/商品期货→CNY，数字货币→USD
+      不含当日交易盈亏。盈亏按净额（pnl - fee，手续费计入）计算。
+      币种归类：A股/商品期货→CNY，数字货币→USD
     - d=None 表示当前时点（含至今全部交易盈亏）
     - 无任何流水记录返回 None
     """
     bal = balance_at(db, user_id, d, currency)
     if bal is None:
         return None
+    net_expr = Trade.pnl - func.coalesce(Trade.fee, 0.0)
     q = (
-        db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+        db.query(func.coalesce(func.sum(net_expr), 0.0))
         .filter(Trade.user_id == user_id, Trade.pnl.isnot(None))
     )
     if currency == USD:

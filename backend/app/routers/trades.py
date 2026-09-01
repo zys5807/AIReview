@@ -160,13 +160,14 @@ def trade_stats(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """按品种类型统计：笔数、胜率、总盈亏"""
+    """按品种类型统计：笔数、胜率、总盈亏（净盈亏 = pnl - fee）"""
+    net_expr = Trade.pnl - func.coalesce(Trade.fee, 0.0)
     rows = (
         db.query(
             Trade.instrument_type,
             func.count(Trade.id).label("count"),
-            func.sum(Trade.pnl).label("total_pnl"),
-            func.sum(case((Trade.pnl > 0, 1), else_=0)).label("win"),
+            func.sum(net_expr).label("total_pnl"),
+            func.sum(case((net_expr > 0, 1), else_=0)).label("win"),
         )
         .filter(Trade.user_id == user.id)
         .group_by(Trade.instrument_type)

@@ -34,12 +34,14 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
   const manualCapitalRef = useRef(false)
   // 品种识别结果（用于显式反馈：已识别/未识别）
   const [matchInfo, setMatchInfo] = useState(null)
-  // 实时监听盈亏金额与占用资金，计算收益率
+  // 实时监听盈亏金额与占用资金，计算收益率（盈亏按净额：扣除手续费）
   const pnl = Form.useWatch('pnl', form)
+  const fee = Form.useWatch('fee', form)
   const investedCapital = Form.useWatch('invested_capital', form)
+  const netPnl = pnl != null ? pnl - (fee || 0) : null
   const returnRate =
-    pnl != null && investedCapital
-      ? (pnl / investedCapital) * 100
+    netPnl != null && investedCapital
+      ? (netPnl / investedCapital) * 100
       : null
 
   // 自动计算占用资金（品种/价格/数量变化时）
@@ -246,12 +248,16 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="pnl" label="盈亏金额">
+            <Form.Item
+              name="pnl"
+              label="盈亏金额"
+              tooltip="毛盈亏（不含手续费），统计时系统自动扣除手续费，以净盈亏计算收益率/胜率等指标"
+            >
               <InputNumber style={{ width: '100%' }} precision={2} placeholder="可留空" />
             </Form.Item>
           </Col>
           <Col span={6}>
-            <Form.Item name="fee" label="手续费" tooltip="仅记录展示，不参与指标计算">
+            <Form.Item name="fee" label="手续费" tooltip="计入净盈亏：统计盈亏 = 盈亏金额 - 手续费">
               <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="可留空" />
             </Form.Item>
           </Col>

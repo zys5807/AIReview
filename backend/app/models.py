@@ -157,8 +157,8 @@ class Trade(Base):
     scale_in_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 加仓时间
     scale_in_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # 加仓价格
     scale_in_volume: Mapped[float | None] = mapped_column(Float, nullable=True)  # 加仓数量/手数
-    fee: Mapped[float | None] = mapped_column(Float, nullable=True)  # 手续费（仅记录展示，不参与指标计算）
-    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # 盈亏金额（可空，允许系统计算）
+    fee: Mapped[float | None] = mapped_column(Float, nullable=True)  # 手续费（统计口径：净盈亏 = pnl - fee）
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # 盈亏金额（毛盈亏不含手续费，可空）
     invested_capital: Mapped[float | None] = mapped_column(
         Float, nullable=True
     )  # 占用资金/本金（收益率分母，自动按品种计算可手动修改）
