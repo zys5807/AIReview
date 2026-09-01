@@ -375,7 +375,7 @@ export default function TradeUpload() {
               <Form.Item
                 name="volume"
                 label="交易手数/数量"
-                extra="A股：1手=100股；商品期货：1手按合约乘数；数字货币：填写USDT金额"
+                tooltip="A股：1手=100股；商品期货：1手按合约乘数计算；数字货币：填写USDT金额"
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} />
               </Form.Item>

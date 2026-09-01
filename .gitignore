@@ -21,7 +21,7 @@ frontend/node_modules/
 frontend/dist/
 
 # 构建产物（PyInstaller）
-backend/build/
+backend/build*/
 backend/dist/
 backend/dist_*/
 

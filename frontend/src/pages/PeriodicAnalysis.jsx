@@ -18,6 +18,7 @@ import {
   Modal,
   Divider,
   List,
+  Tooltip,
 } from 'antd'
 import {
   CalendarOutlined,
@@ -26,6 +27,7 @@ import {
   RobotOutlined,
   BulbOutlined,
   WarningOutlined,
+  QuestionCircleOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { getPeriodStats, getScoreTrend, periodAiAnalysis } from '../api'
@@ -314,15 +316,49 @@ export default function PeriodicAnalysis() {
         </Col>
         <Col span={3}>
           <Card size="small">
-            <Statistic title="总手数" value={summary?.total_volume ?? 0} precision={2} />
+            <Statistic
+              title={
+                <span>
+                  阶段期初资金
+                  <Tooltip title="阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏">
+                    <QuestionCircleOutlined
+                      style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
+                    />
+                  </Tooltip>
+                </span>
+              }
+              value={metrics?.start_balance ?? '-'}
+              prefix={metrics?.start_balance != null ? '¥' : ''}
+              precision={2}
+            />
           </Card>
         </Col>
         <Col span={3}>
           <Card size="small">
             <Statistic
-              title="手续费汇总"
-              value={summary?.total_fee ?? 0}
+              title={
+                <span>
+                  阶段期末资金
+                  <Tooltip title="阶段期初资金 + 该阶段交易盈亏（含手续费按平仓价计，与阶段总收益率口径一致）">
+                    <QuestionCircleOutlined
+                      style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
+                    />
+                  </Tooltip>
+                </span>
+              }
+              value={metrics?.end_balance ?? '-'}
+              prefix={metrics?.end_balance != null ? '¥' : ''}
               precision={2}
+              styles={{
+                content: {
+                  color:
+                    metrics?.start_balance != null &&
+                    metrics?.end_balance != null &&
+                    metrics.end_balance >= metrics.start_balance
+                      ? '#cf1322'
+                      : '#3f8600',
+                },
+              }}
             />
           </Card>
         </Col>
@@ -343,37 +379,7 @@ export default function PeriodicAnalysis() {
         }
       >
         <Row gutter={16}>
-          <Col span={3}>
-            <Card size="small">
-              <Statistic
-                title="阶段期初资金"
-                value={metrics?.start_balance ?? '-'}
-                prefix={metrics?.start_balance != null ? '¥' : ''}
-                precision={2}
-              />
-            </Card>
-          </Col>
-          <Col span={3}>
-            <Card size="small">
-              <Statistic
-                title="阶段期末资金"
-                value={metrics?.end_balance ?? '-'}
-                prefix={metrics?.end_balance != null ? '¥' : ''}
-                precision={2}
-                styles={{
-                  content: {
-                    color:
-                      metrics?.start_balance != null &&
-                      metrics?.end_balance != null &&
-                      metrics.end_balance >= metrics.start_balance
-                        ? '#cf1322'
-                        : '#3f8600',
-                  },
-                }}
-              />
-            </Card>
-          </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="平均单笔盈亏比"
@@ -382,7 +388,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="日平均仓位"
@@ -392,7 +398,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="阶段总收益率"
@@ -411,7 +417,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="阶段最大回撤"
@@ -427,7 +433,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="最大周度回撤"
@@ -443,7 +449,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="卡玛比率"
@@ -452,11 +458,29 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={8}>
             <Card size="small">
               <Statistic
                 title="夏普比率"
                 value={metrics?.sharpe_ratio ?? '-'}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small">
+              <Statistic
+                title="总手数"
+                value={summary?.total_volume ?? 0}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={8}>
+            <Card size="small">
+              <Statistic
+                title="手续费汇总"
+                value={summary?.total_fee ?? 0}
                 precision={2}
               />
             </Card>

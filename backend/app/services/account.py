@@ -8,11 +8,12 @@
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..models import AccountFlow
+from ..models import AccountFlow, Trade
 from .investment import compute_invested_capital
 
 
@@ -49,6 +50,29 @@ def balance_at(db: Session, user_id: int | None, d: date | None = None) -> float
 def current_balance(db: Session, user_id: int | None) -> float | None:
     """当前账户总资金（最后一笔流水的余额）"""
     return balance_at(db, user_id, None)
+
+
+def equity_before(db: Session, user_id: int | None, d: date | None = None) -> float | None:
+    """截至某日交易开始前的账户权益（含此前全部已平仓交易盈亏）
+
+    语义：阶段期初资金 = 初始资金 + 出入金 + 该日之前所有已平仓交易的盈亏累计，
+    即"到这一天的交易发生之前，账户上有多少钱"。
+
+    - 余额部分：balance_at 口径（截至 d 日含当日的出入金流水余额）
+    - 盈亏部分：仅统计 exit_time < d（当日之前已平仓）的交易，不含当日交易盈亏
+    - d=None 表示当前时点（含至今全部交易盈亏）
+    - 无任何流水记录返回 None
+    """
+    bal = balance_at(db, user_id, d)
+    if bal is None:
+        return None
+    q = (
+        db.query(func.coalesce(func.sum(Trade.pnl), 0.0))
+        .filter(Trade.user_id == user_id, Trade.pnl.isnot(None))
+    )
+    if d is not None:
+        q = q.filter(Trade.exit_time < datetime.combine(d, time.min))
+    return round(bal + float(q.scalar() or 0.0), 2)
 
 
 def compute_plan_position(

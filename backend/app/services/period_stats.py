@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from ..models import ReviewReport, Trade
-from .account import balance_at
+from .account import balance_at, equity_before
 
 # 常见问题关键词（用于从复盘报告的不足/改进中聚合高频主题）
 COMMON_ISSUE_KEYWORDS = [
@@ -64,13 +64,15 @@ def _trades_query(db: Session, start: datetime, end: datetime, instrument_type: 
 def _calc_metrics(db, trades, start, end, user_id) -> dict:
     """阶段高级指标：平均单笔盈亏比 / 日平均仓位 / 总收益率 / 最大回撤 / 周度回撤 / 卡玛 / 夏普
 
-    资金类指标依赖账户资金流水（balance_at），无资金记录时返回 None，
+    资金类指标依赖账户资金流水，无资金记录时返回 None，
     前端应提示"请先设置初始资金"。平均单笔盈亏比不依赖资金。
-    期初资金 = 阶段首日账户资金（流水口径）；期末资金 = 期初资金 + 阶段总盈亏（与收益率口径一致）。
+
+    期初资金 = 阶段首日交易开始前的账户权益（初始资金+出入金+此前全部已平仓交易盈亏，
+    equity_before 口径，不含当日交易盈亏）；期末资金 = 期初资金 + 阶段总盈亏（与收益率口径一致）。
     """
     count = len(trades)
-    # ---- 期初资金（阶段首日流水余额），无流水时 None
-    start_balance = balance_at(db, user_id, start.date())
+    # ---- 期初资金（阶段首日交易开始前权益，含此前交易盈亏），无流水时 None
+    start_balance = equity_before(db, user_id, start.date())
     has_capital = start_balance is not None and start_balance > 0
     if count == 0:
         return {
@@ -196,7 +198,7 @@ def _calc_metrics(db, trades, start, end, user_id) -> dict:
         ratios = []
         d = start.date()
         for _ in range(days):
-            bal = balance_at(db, user_id, d)
+            bal = equity_before(db, user_id, d)
             if bal and bal > 0:
                 ratios.append(day_invested.get(d, 0.0) / bal)
             d += timedelta(days=1)
