@@ -111,6 +111,7 @@ export default function PeriodicAnalysis() {
   }
 
   const summary = stats?.summary
+  const metrics = stats?.metrics
   const avgScore = scores?.avg_score
 
   // 累计盈亏折线图
@@ -326,6 +327,112 @@ export default function PeriodicAnalysis() {
           </Card>
         </Col>
       </Row>
+
+      {/* 阶段高级指标（需求3） */}
+      <Card
+        size="small"
+        title={
+          <Space>
+            阶段绩效指标
+            {stats?.metrics?.has_capital === false && (
+              <Typography.Text type="warning" style={{ fontSize: 12, fontWeight: 'normal' }}>
+                未设置初始资金，收益率/回撤/夏普等指标不可用（请在交易计划页录入账户资金流水）
+              </Typography.Text>
+            )}
+          </Space>
+        }
+      >
+        <Row gutter={16}>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="平均单笔盈亏比"
+                value={metrics?.avg_pl_ratio ?? '-'}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="日平均仓位"
+                value={metrics?.avg_daily_position_pct ?? '-'}
+                suffix={metrics?.avg_daily_position_pct != null ? '%' : ''}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="阶段总收益率"
+                value={metrics?.total_return_pct ?? '-'}
+                suffix={metrics?.total_return_pct != null ? '%' : ''}
+                precision={2}
+                styles={{
+                  content: {
+                    color:
+                      metrics?.total_return_pct != null && metrics.total_return_pct >= 0
+                        ? '#cf1322'
+                        : '#3f8600',
+                  },
+                }}
+                prefix={metrics?.total_return_pct != null && metrics.total_return_pct >= 0 ? '+' : ''}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="阶段最大回撤"
+                value={metrics?.max_drawdown_pct ?? '-'}
+                suffix={metrics?.max_drawdown_pct != null ? '%' : ''}
+                precision={2}
+                styles={{
+                  content: {
+                    color: metrics?.max_drawdown_pct != null ? '#3f8600' : undefined,
+                  },
+                }}
+                prefix={metrics?.max_drawdown_pct != null ? '-' : ''}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="最大周度回撤"
+                value={metrics?.max_weekly_drawdown_pct ?? '-'}
+                suffix={metrics?.max_weekly_drawdown_pct != null ? '%' : ''}
+                precision={2}
+                styles={{
+                  content: {
+                    color: metrics?.max_weekly_drawdown_pct != null ? '#3f8600' : undefined,
+                  },
+                }}
+                prefix={metrics?.max_weekly_drawdown_pct != null ? '-' : ''}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="卡玛比率"
+                value={metrics?.calmar_ratio ?? '-'}
+                precision={2}
+              />
+            </Card>
+          </Col>
+          <Col span={3}>
+            <Card size="small">
+              <Statistic
+                title="夏普比率"
+                value={metrics?.sharpe_ratio ?? '-'}
+                precision={2}
+              />
+            </Card>
+          </Col>
+        </Row>
+      </Card>
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60 }}>

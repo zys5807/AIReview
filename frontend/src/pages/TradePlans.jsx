@@ -31,6 +31,8 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   CalendarOutlined,
+  WalletOutlined,
+  FundOutlined,
 } from '@ant-design/icons'
 import {
   listTradePlans,
@@ -43,6 +45,12 @@ import {
   compareTradePlan,
   listTradingSystems,
   listTrades,
+  calcTradeCapital,
+  getAccountSummary,
+  listAccountFlows,
+  createAccountFlow,
+  updateAccountFlow,
+  deleteAccountFlow,
 } from '../api'
 
 const { TextArea } = Input
@@ -81,6 +89,60 @@ export default function TradePlans() {
   const [comparing, setComparing] = useState(false)
   const [execOpen, setExecOpen] = useState(null) // 当前执行关联的计划
 
+  // ---- V1.006 账户资金与仓位 ----
+  const [accountSummary, setAccountSummary] = useState(null)
+  const [flows, setFlows] = useState([])
+  const [flowModalOpen, setFlowModalOpen] = useState(false)
+  const [flowForm] = Form.useForm()
+  const [flowSaving, setFlowSaving] = useState(false)
+
+  // 表单实时仓位计算（输入计划手数/入场价后显示）
+  const fInstrType = Form.useWatch('instrument_type', form)
+  const fInstrCode = Form.useWatch('instrument_code', form)
+  const fInstrName = Form.useWatch('instrument_name', form)
+  const fPrice = Form.useWatch('planned_entry_price', form)
+  const fVolume = Form.useWatch('planned_volume', form)
+  const fPlanDate = Form.useWatch('plan_date', form)
+  const [livePosition, setLivePosition] = useState(null) // { invested, ratio, matched }
+
+  const fetchAccount = async () => {
+    try {
+      setAccountSummary(await getAccountSummary())
+      setFlows(await listAccountFlows())
+    } catch (e) {
+      /* 拦截器已提示 */
+    }
+  }
+
+  // 计划表单变化 → 实时计算占用资金/仓位比例
+  useEffect(() => {
+    if (!fPrice || !fVolume || !fInstrType) {
+      setLivePosition(null)
+      return
+    }
+    calcTradeCapital({
+      instrument_type: fInstrType,
+      instrument_code: fInstrCode || '',
+      instrument_name: fInstrName || '',
+      entry_price: fPrice,
+      volume: fVolume,
+    })
+      .then((r) => {
+        const balance = accountSummary?.current_balance
+        setLivePosition({
+          invested: r.invested_capital,
+          matched: r.matched_name,
+          multiplier: r.multiplier,
+          ratio:
+            r.invested_capital != null && balance
+              ? (r.invested_capital / balance) * 100
+              : null,
+        })
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fInstrType, fInstrCode, fInstrName, fPrice, fVolume, fPlanDate, accountSummary])
+
   const fetchData = async () => {
     setLoading(true)
     try {
@@ -104,6 +166,7 @@ export default function TradePlans() {
     listTrades({ page: 1, page_size: 200 })
       .then((r) => setTrades(r.items || []))
       .catch(() => {})
+    fetchAccount()
   }, [])
 
   const openCreate = () => {
@@ -137,6 +200,41 @@ export default function TradePlans() {
       message.success('交易计划已创建')
     }
     setModalOpen(false)
+    fetchData()
+  }
+
+  const openFlowModal = () => {
+    flowForm.resetFields()
+    flowForm.setFieldsValue({ flow_type: 'initial', flow_date: dayjs() })
+    setFlowModalOpen(true)
+    fetchAccount()
+  }
+
+  const handleFlowSubmit = async () => {
+    const values = await flowForm.validateFields()
+    setFlowSaving(true)
+    try {
+      await createAccountFlow({
+        flow_date: dayjs(values.flow_date).format('YYYY-MM-DD'),
+        flow_type: values.flow_type,
+        amount: values.amount,
+        note: values.note || '',
+      })
+      message.success('资金流水已记录')
+      setFlowModalOpen(false)
+      await fetchAccount()
+      fetchData()
+    } catch (e) {
+      /* 拦截器已提示 */
+    } finally {
+      setFlowSaving(false)
+    }
+  }
+
+  const handleDeleteFlow = async (id) => {
+    await deleteAccountFlow(id)
+    message.success('流水已删除')
+    await fetchAccount()
     fetchData()
   }
 
@@ -190,8 +288,56 @@ export default function TradePlans() {
     <Tag color={STATUS_META[p.status]?.color}>{STATUS_META[p.status]?.label}</Tag>
   )
 
+  // 总仓位（进行中计划合计占用 ÷ 当前资金）
+  const pendingInvested = (plans || [])
+    .filter((p) => p.status === 'pending' && p.planned_invested != null)
+    .reduce((s, p) => s + p.planned_invested, 0)
+  const totalRatio =
+    accountSummary?.current_balance && pendingInvested
+      ? (pendingInvested / accountSummary.current_balance) * 100
+      : null
+  const fmtMoney = (v) =>
+    v == null || isNaN(v) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
+      {/* V1.006 账户资金卡片 */}
+      <Card size="small">
+        <Space size={24} wrap align="center">
+          <Space>
+            <WalletOutlined style={{ fontSize: 18, color: '#534AB7' }} />
+            <Typography.Text type="secondary">当前账户资金：</Typography.Text>
+            <Typography.Text strong style={{ fontSize: 16 }}>
+              ¥{fmtMoney(accountSummary?.current_balance)}
+            </Typography.Text>
+          </Space>
+          <Space>
+            <Typography.Text type="secondary">初始资金：</Typography.Text>
+            <Typography.Text>¥{fmtMoney(accountSummary?.initial_amount)}</Typography.Text>
+            <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+              流水：
+            </Typography.Text>
+            <Typography.Text>{accountSummary?.flow_count ?? 0} 条</Typography.Text>
+          </Space>
+          <Space>
+            <Typography.Text type="secondary">进行中计划总仓位：</Typography.Text>
+            <Typography.Text strong style={{ color: totalRatio != null && totalRatio > 30 ? '#cf1322' : undefined }}>
+              {totalRatio != null ? `${totalRatio.toFixed(2)}%` : '—'}
+            </Typography.Text>
+          </Space>
+          <Button size="small" icon={<FundOutlined />} onClick={openFlowModal}>
+            管理资金
+          </Button>
+        </Space>
+        {accountSummary?.current_balance == null && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 8 }}
+            message="尚未设置初始资金：点右上角「管理资金」记录初始入金后，交易计划才能自动计算仓位比例"
+          />
+        )}
+      </Card>
       <Card
         title="交易计划"
         extra={
@@ -344,6 +490,22 @@ export default function TradePlans() {
                               </>
                             )}
                           </div>
+                          {p.planned_invested != null && (
+                            <div>
+                              <Typography.Text type="secondary">占用资金：</Typography.Text>
+                              ¥{fmtMoney(p.planned_invested)}
+                              <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
+                                单笔仓位：
+                              </Typography.Text>
+                              {p.position_ratio != null ? (
+                                <Typography.Text strong style={{ color: '#534AB7' }}>
+                                  {p.position_ratio.toFixed(2)}%
+                                </Typography.Text>
+                              ) : (
+                                <Typography.Text type="secondary">未设置资金</Typography.Text>
+                              )}
+                            </div>
+                          )}
                           {p.entry_reason && (
                             <div style={{ color: '#595959', marginTop: 4 }}>入场理由：{p.entry_reason}</div>
                           )}
@@ -497,6 +659,42 @@ export default function TradePlans() {
               </Form.Item>
             </Col>
           </Row>
+          {livePosition && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: '8px 12px',
+                background: '#fafafa',
+                borderRadius: 6,
+                border: '1px solid #f0f0f0',
+                fontSize: 13,
+              }}
+            >
+              {livePosition.matched && (
+                <Tag color="green" style={{ marginRight: 8 }}>
+                  ✅ {livePosition.matched} ×{livePosition.multiplier}
+                </Tag>
+              )}
+              {livePosition.invested != null ? (
+                <>
+                  <Typography.Text type="secondary">占用资金：</Typography.Text>
+                  <Typography.Text strong>¥{fmtMoney(livePosition.invested)}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ marginLeft: 12 }}>
+                    单笔仓位：
+                  </Typography.Text>
+                  {livePosition.ratio != null ? (
+                    <Typography.Text strong style={{ color: '#534AB7' }}>
+                      {livePosition.ratio.toFixed(2)}%
+                    </Typography.Text>
+                  ) : (
+                    <Typography.Text type="warning">未设置初始资金，无法计算</Typography.Text>
+                  )}
+                </>
+              ) : (
+                <Typography.Text type="secondary">输入入场价与手数后自动计算占用资金与仓位比例</Typography.Text>
+              )}
+            </div>
+          )}
           <Form.Item name="entry_reason" label="入场理由">
             <TextArea
               rows={2}
@@ -533,6 +731,75 @@ export default function TradePlans() {
             <TextArea rows={2} placeholder="如：原油走强带动化工板块，PTA 跟随反弹" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 资金流水管理 */}
+      <Modal
+        title="账户资金管理"
+        open={flowModalOpen}
+        onCancel={() => setFlowModalOpen(false)}
+        footer={null}
+        width={680}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="账户总资金由流水自动重算。初始资金日期可任意指定（如开始交易那天）；中途入金/出金追加记录即可，历史任意日期资金可精确回溯。"
+        />
+        <Form form={flowForm} layout="inline" style={{ marginBottom: 12 }} onFinish={handleFlowSubmit}>
+          <Form.Item name="flow_date" label="日期" rules={[{ required: true }]}>
+            <DatePicker style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="flow_type" label="类型" rules={[{ required: true }]}>
+            <Select
+              style={{ width: 130 }}
+              options={[
+                { value: 'initial', label: '初始资金' },
+                { value: 'deposit', label: '入金' },
+                { value: 'withdraw', label: '出金' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="amount" label="金额" rules={[{ required: true, message: '请输入金额' }]}>
+            <InputNumber style={{ width: 130 }} min={0.01} precision={2} />
+          </Form.Item>
+          <Form.Item name="note" label="备注">
+            <Input placeholder="可选" style={{ width: 140 }} />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={flowSaving}>
+            添加
+          </Button>
+        </Form>
+        <List
+          size="small"
+          bordered
+          dataSource={flows}
+          locale={{ emptyText: '暂无资金流水，请先添加初始资金' }}
+          renderItem={(f) => (
+            <List.Item
+              actions={[
+                <Popconfirm key="del" title="删除该流水？余额将自动重算" onConfirm={() => handleDeleteFlow(f.id)}>
+                  <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                </Popconfirm>,
+              ]}
+            >
+              <Space size={12}>
+                <Tag color={f.flow_type === 'initial' ? 'purple' : f.flow_type === 'deposit' ? 'green' : 'red'}>
+                  {f.flow_type === 'initial' ? '初始' : f.flow_type === 'deposit' ? '入金' : '出金'}
+                </Tag>
+                <Typography.Text>{f.flow_date}</Typography.Text>
+                <Typography.Text strong style={{ color: f.flow_type === 'withdraw' ? '#3f8600' : '#cf1322' }}>
+                  {f.flow_type === 'withdraw' ? '-' : '+'}¥{fmtMoney(f.amount)}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  余额 ¥{fmtMoney(f.balance_after)}
+                </Typography.Text>
+                {f.note && <Typography.Text type="secondary">（{f.note}）</Typography.Text>}
+              </Space>
+            </List.Item>
+          )}
+        />
       </Modal>
 
       {/* 标记执行：选择关联交易 */}

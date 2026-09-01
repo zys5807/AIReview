@@ -159,6 +159,9 @@ class Trade(Base):
     scale_in_volume: Mapped[float | None] = mapped_column(Float, nullable=True)  # 加仓数量/手数
     fee: Mapped[float | None] = mapped_column(Float, nullable=True)  # 手续费（仅记录展示，不参与指标计算）
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # 盈亏金额（可空，允许系统计算）
+    invested_capital: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )  # 占用资金/本金（收益率分母，自动按品种计算可手动修改）
     # 导入合并状态
     remaining_volume: Mapped[float] = mapped_column(Float, default=0.0)  # 当前未平仓数量（0=已平仓）
     import_cost: Mapped[float] = mapped_column(Float, default=0.0)  # 导入累计买入成本
@@ -279,6 +282,9 @@ class TradePlan(Base):
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)  # 初始止损位
     max_loss_amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # 最大亏损金额
     planned_volume: Mapped[float | None] = mapped_column(Float, nullable=True)  # 计划手数/数量
+    # V1.006 仓位比例（创建时按当时账户资金计算，存快照）
+    planned_invested: Mapped[float | None] = mapped_column(Float, nullable=True)  # 计划占用资金
+    position_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)  # 单笔仓位比例 %（快照）
     # 目标
     target1: Mapped[float | None] = mapped_column(Float, nullable=True)  # 目标价1
     target2: Mapped[float | None] = mapped_column(Float, nullable=True)  # 目标价2
@@ -308,3 +314,22 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now
     )
+
+
+class AccountFlow(Base):
+    """账户资金流水：初始资金(initial)/入金(deposit)/出金(withdraw)
+
+    balance_after 由系统按 (flow_date, id) 顺序自动重算，不允许手填。
+    支持任意日期补录历史：初始资金是哪天由用户指定，中途可随时追加修正记录。
+    """
+
+    __tablename__ = "account_flows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, default=None, nullable=True)
+    flow_date: Mapped[date] = mapped_column(Date, nullable=False)  # 资金变动日期
+    flow_type: Mapped[str] = mapped_column(String(20), default="initial")  # initial/deposit/withdraw
+    amount: Mapped[float] = mapped_column(Float, nullable=False)  # 变动金额（正数）
+    balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)  # 该笔后账户总资金（自动重算）
+    note: Mapped[str] = mapped_column(String(200), default="")  # 备注
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

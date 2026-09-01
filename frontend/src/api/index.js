@@ -43,6 +43,22 @@ export const reviewTradePlan = (id) =>
 export const compareTradePlan = (id) =>
   client.post(`/api/trade-plans/${id}/comparison`).then((r) => r.data)
 
+// ---------- 账户资金流水 ----------
+export const getAccountSummary = () =>
+  client.get('/api/accounts/summary').then((r) => r.data)
+
+export const listAccountFlows = () =>
+  client.get('/api/accounts/flows').then((r) => r.data)
+
+export const createAccountFlow = (data) =>
+  client.post('/api/accounts/flows', data).then((r) => r.data)
+
+export const updateAccountFlow = (id, data) =>
+  client.put(`/api/accounts/flows/${id}`, data).then((r) => r.data)
+
+export const deleteAccountFlow = (id) =>
+  client.delete(`/api/accounts/flows/${id}`).then((r) => r.data)
+
 // 用户管理（管理员）
 export const listUsers = () => client.get('/api/users').then((r) => r.data)
 
@@ -84,6 +100,10 @@ export const updateTrade = (id, data) =>
   client.put(`/api/trades/${id}`, data).then((r) => r.data)
 
 export const deleteTrade = (id) => client.delete(`/api/trades/${id}`).then((r) => r.data)
+
+// 占用资金自动计算（前端录入实时预填）
+export const calcTradeCapital = (data) =>
+  client.post('/api/trades/calc-capital', data).then((r) => r.data)
 
 // 品种分类统计
 export const getTradeStats = () => client.get('/api/trades/stats').then((r) => r.data)

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import dayjs from 'dayjs'
 import {
   Card,
@@ -20,7 +20,7 @@ import {
   Typography,
 } from 'antd'
 import { ScanOutlined, ArrowUpOutlined, ArrowDownOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
-import { createTrade, listTradingSystems, recognizeScreenshot } from '../api'
+import { createTrade, listTradingSystems, recognizeScreenshot, calcTradeCapital } from '../api'
 import ScreenshotUploader from '../components/ScreenshotUploader'
 import ActualPeriodSelector from '../components/ActualPeriodSelector'
 
@@ -38,8 +38,34 @@ export default function TradeUpload() {
   const [submitting, setSubmitting] = useState(false)
   const [recognition, setRecognition] = useState(null)
   const [recognizing, setRecognizing] = useState(false)
+  // 占用资金：用户手动改过后不再自动覆盖
+  const manualCapitalRef = useRef(false)
+  const pnl = Form.useWatch('pnl', form)
+  const investedCapital = Form.useWatch('invested_capital', form)
+  const returnRate = pnl != null && investedCapital ? (pnl / investedCapital) * 100 : null
+  const [matchInfo, setMatchInfo] = useState(null)
 
   const instrumentType = Form.useWatch('instrument_type', form)
+
+  // 自动计算占用资金（品种/价格/数量变化时）
+  const refreshAutoCapital = (values) => {
+    const { instrument_type, instrument_code, instrument_name, entry_price, volume } = values
+    if (!entry_price || !volume || manualCapitalRef.current) return
+    calcTradeCapital({
+      instrument_type,
+      instrument_code,
+      instrument_name,
+      entry_price,
+      volume,
+    })
+      .then((r) => {
+        setMatchInfo({ matched: r.matched_name, multiplier: r.multiplier })
+        if (r.invested_capital != null && !manualCapitalRef.current) {
+          form.setFieldValue('invested_capital', r.invested_capital)
+        }
+      })
+      .catch(() => {})
+  }
 
   useEffect(() => {
     listTradingSystems()
@@ -217,6 +243,16 @@ export default function TradeUpload() {
           form={form}
           layout="vertical"
           onFinish={handleSubmit}
+          onValuesChange={(changed, all) => {
+            if ('invested_capital' in changed) manualCapitalRef.current = true
+            if (
+              ['instrument_type', 'instrument_code', 'instrument_name', 'entry_price', 'volume'].some(
+                (k) => k in changed,
+              )
+            ) {
+              refreshAutoCapital(all)
+            }
+          }}
           initialValues={{
             instrument_type: 'A股',
             direction: 'long',
@@ -357,6 +393,49 @@ export default function TradeUpload() {
                 tooltip="仅记录展示，不参与盈亏比等指标计算"
               >
                 <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="可留空" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item
+                name="invested_capital"
+                label="占用资金"
+                tooltip="收益率分母。自动按品种计算（期货=开仓价×手数×合约乘数×10%保证金；A股=价×股数；币=价×数量），也可手动修改"
+              >
+                <InputNumber style={{ width: '100%' }} min={0} precision={2} placeholder="自动计算" />
+              </Form.Item>
+              {matchInfo && (
+                <div style={{ fontSize: 12, marginTop: -18, marginBottom: 8 }}>
+                  {matchInfo.matched ? (
+                    <span style={{ color: '#52c41a' }}>
+                      ✅ 已识别品种：{matchInfo.matched}（乘数 {matchInfo.multiplier}）
+                    </span>
+                  ) : (
+                    <span style={{ color: '#fa8c16' }}>
+                      ⚠️ 未识别品种，已按名义本金估算，建议手动核对
+                    </span>
+                  )}
+                </div>
+              )}
+            </Col>
+            <Col span={8}>
+              <Form.Item label="收益率（盈亏÷占用资金）">
+                <div
+                  style={{
+                    lineHeight: '32px',
+                    fontWeight: 500,
+                    fontSize: 14,
+                    color:
+                      returnRate == null
+                        ? '#999'
+                        : returnRate >= 0
+                          ? '#cf1322'
+                          : '#3f8600',
+                  }}
+                >
+                  {returnRate != null ? `${returnRate >= 0 ? '+' : ''}${returnRate.toFixed(2)}%` : '—'}
+                </div>
               </Form.Item>
             </Col>
           </Row>

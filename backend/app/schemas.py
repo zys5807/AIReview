@@ -186,6 +186,7 @@ class TradeBase(BaseModel):
     fee: float | None = None  # 手续费（仅记录展示，不参与指标计算）
     remaining_volume: float = 0.0  # 当前未平仓数量（0=已平仓）
     pnl: float | None = None
+    invested_capital: float | None = None  # 占用资金/本金（收益率分母）
     notes: str = ""
     psychology_notes: str = ""  # 持仓过程中的心理状态（手工填写）
     timeframe_notes: str = ""  # 各周期判断依据（手填）
@@ -234,6 +235,21 @@ class TradeCreate(TradeBase):
     pass
 
 
+class CapitalCalcIn(BaseModel):
+    """占用资金自动计算请求"""
+    instrument_type: str = ""
+    instrument_code: str = ""
+    instrument_name: str = ""
+    entry_price: float | None = None
+    volume: float = 1.0
+
+
+class CapitalCalcOut(BaseModel):
+    invested_capital: float | None = None
+    matched_name: str | None = None  # 匹配到的标准品种名；None=未识别（按名义本金估算）
+    multiplier: float = 1.0  # 命中的合约乘数
+
+
 class TradeUpdate(BaseModel):
     instrument_type: InstrumentType | None = None
     instrument_code: str | None = None
@@ -254,6 +270,7 @@ class TradeUpdate(BaseModel):
     fee: float | None = None
     remaining_volume: float | None = None
     pnl: float | None = None
+    invested_capital: float | None = None
     notes: str | None = None
     psychology_notes: str | None = None
     timeframe_notes: str | None = None
@@ -404,6 +421,8 @@ class TradePlanOut(BaseModel):
     stop_loss: float | None = None
     max_loss_amount: float | None = None
     planned_volume: float | None = None
+    planned_invested: float | None = None  # 计划占用资金（自动计算）
+    position_ratio: float | None = None  # 单笔仓位比例 %（快照，创建时按当时账户资金）
     target1: float | None = None
     target2: float | None = None
     risk_reward: str
@@ -443,3 +462,30 @@ class TradePlanOut(BaseModel):
 class TradePlanExecuteIn(BaseModel):
     """标记执行并关联实际交易"""
     linked_trade_id: int | None = None
+
+
+# ---------- 账户资金流水 ----------
+class AccountFlowCreate(BaseModel):
+    flow_date: date  # 资金变动日期（可任意指定，补录历史）
+    flow_type: Literal["initial", "deposit", "withdraw"] = "initial"
+    amount: float = Field(..., gt=0, description="变动金额（正数）")
+    note: str = ""
+
+
+class AccountFlowUpdate(BaseModel):
+    flow_date: date | None = None
+    flow_type: Literal["initial", "deposit", "withdraw"] | None = None
+    amount: float | None = Field(None, gt=0)
+    note: str | None = None
+
+
+class AccountFlowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    flow_date: date
+    flow_type: str
+    amount: float
+    balance_after: float | None = None
+    note: str = ""
+    created_at: datetime

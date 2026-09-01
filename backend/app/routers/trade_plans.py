@@ -13,6 +13,7 @@ from ..schemas import (
     TradePlanUpdate,
 )
 from ..services.analysis import AnalysisError, plan_comparison, plan_review
+from ..services.account import compute_plan_position
 
 router = APIRouter(prefix="/api/trade-plans", tags=["交易计划"])
 
@@ -22,6 +23,25 @@ def _get_owned_plan(db: Session, plan_id: int, user_id: int) -> TradePlan:
     if not plan or plan.user_id != user_id:
         raise HTTPException(status_code=404, detail="交易计划不存在")
     return plan
+
+
+def _recalc_position_snapshot(db: Session, plan: TradePlan) -> None:
+    """按计划当前数据重算仓位快照（planned_invested / position_ratio）
+
+    快照口径：占用资金 ÷ 截至计划日期的账户资金。账户无资金记录时 position_ratio=None
+    """
+    invested, ratio = compute_plan_position(
+        db,
+        plan.user_id,
+        plan.instrument_type,
+        plan.instrument_code,
+        plan.instrument_name,
+        plan.planned_entry_price,
+        plan.planned_volume,
+        plan.plan_date,
+    )
+    plan.planned_invested = invested
+    plan.position_ratio = ratio
 
 
 @router.post("", response_model=TradePlanOut, status_code=201)
@@ -34,6 +54,9 @@ def create_plan(
     payload["user_id"] = user.id
     plan = TradePlan(**payload)
     db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    _recalc_position_snapshot(db, plan)
     db.commit()
     db.refresh(plan)
     return plan
@@ -83,6 +106,7 @@ def update_plan(
     payload = data.model_dump(exclude_unset=True)
     for field, value in payload.items():
         setattr(plan, field, value)
+    _recalc_position_snapshot(db, plan)
     db.commit()
     db.refresh(plan)
     return plan

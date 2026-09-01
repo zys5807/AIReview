@@ -42,6 +42,11 @@ _MIGRATIONS = [
     ("trades", "remaining_volume", "FLOAT DEFAULT 0"),
     ("trades", "import_cost", "FLOAT DEFAULT 0"),
     ("trades", "import_revenue", "FLOAT DEFAULT 0"),
+    # V1.006 占用资金（收益率分母，自动按品种计算可手动修改）
+    ("trades", "invested_capital", "FLOAT DEFAULT NULL"),
+    # V1.006 交易计划仓位比例快照
+    ("trade_plans", "planned_invested", "FLOAT DEFAULT NULL"),
+    ("trade_plans", "position_ratio", "FLOAT DEFAULT NULL"),
     ("trade_plans", "plan_date", "DATE DEFAULT NULL"),
     ("screenshots", "user_id", "INTEGER DEFAULT NULL"),
     ("trading_systems", "user_id", "INTEGER DEFAULT NULL"),

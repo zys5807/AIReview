@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from ..models import ReviewReport, Trade
+from .account import balance_at
 
 # 常见问题关键词（用于从复盘报告的不足/改进中聚合高频主题）
 COMMON_ISSUE_KEYWORDS = [
@@ -59,6 +61,157 @@ def _trades_query(db: Session, start: datetime, end: datetime, instrument_type: 
     return q.order_by(Trade.exit_time.asc())
 
 
+def _calc_metrics(db, trades, start, end, user_id) -> dict:
+    """阶段高级指标：平均单笔盈亏比 / 日平均仓位 / 总收益率 / 最大回撤 / 周度回撤 / 卡玛 / 夏普
+
+    资金类指标依赖账户资金流水（balance_at），无资金记录时返回 None，
+    前端应提示"请先设置初始资金"。平均单笔盈亏比不依赖资金。
+    """
+    count = len(trades)
+    if count == 0:
+        return {
+            "avg_pl_ratio": None,
+            "avg_daily_position_pct": None,
+            "total_return_pct": None,
+            "max_drawdown_pct": None,
+            "max_weekly_drawdown_pct": None,
+            "calmar_ratio": None,
+            "sharpe_ratio": None,
+            "has_capital": False,
+        }
+
+    # ---- 1. 平均单笔盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致）
+    pnls = [t.pnl for t in trades if t.pnl is not None]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    if avg_loss > 0:
+        avg_pl_ratio = round(avg_win / avg_loss, 3)
+    elif avg_win > 0:
+        avg_pl_ratio = 999.0  # 全赢单
+    else:
+        avg_pl_ratio = None
+
+    # ---- 资金基准：期初资金（start 当日）
+    initial = balance_at(db, user_id, start.date())
+    has_capital = initial is not None and initial > 0
+
+    # ---- 按日盈亏
+    by_day_pnl: dict = defaultdict(float)
+    for t in trades:
+        if t.pnl is not None:
+            by_day_pnl[t.exit_time.date()] += t.pnl
+
+    # ---- 净值曲线（自然日展开，无交易日照记 0）
+    days = (end.date() - start.date()).days + 1
+    curve: list[tuple] = []
+    if has_capital:
+        equity = float(initial)
+        d = start.date()
+        for _ in range(days):
+            equity += by_day_pnl.get(d, 0.0)
+            curve.append((d, equity))
+            d += timedelta(days=1)
+
+    def _max_dd(points: list[tuple]) -> float:
+        """峰值到谷值的最大回撤比例"""
+        peak = None
+        mdd = 0.0
+        for _, v in points:
+            if peak is None or v > peak:
+                peak = v
+            if peak and peak > 0:
+                dd = (peak - v) / peak
+                if dd > mdd:
+                    mdd = dd
+        return mdd
+
+    # ---- 2. 阶段总收益率
+    total_pnl = sum(pnls)
+    total_return_pct = round(total_pnl / initial * 100, 2) if has_capital else None
+
+    # ---- 3. 阶段最大回撤（资金曲线）
+    max_drawdown_pct = round(_max_dd(curve) * 100, 2) if has_capital and curve else None
+
+    # ---- 4. 最大周度回撤（按 ISO 周聚合盈亏后的曲线）
+    weekly_pnl: dict = defaultdict(float)
+    for d, pnl in by_day_pnl.items():
+        iso = d.isocalendar()
+        weekly_pnl[f"{iso[0]}-W{iso[1]:02d}"] += pnl
+    max_weekly_drawdown_pct = None
+    if has_capital:
+        weq = float(initial)
+        wcurve = []
+        for wk in sorted(weekly_pnl):
+            weq += weekly_pnl[wk]
+            wcurve.append((wk, weq))
+        max_weekly_drawdown_pct = round(_max_dd(wcurve) * 100, 2) if wcurve else None
+
+    # ---- 5. 年化收益率（自然日年化，供卡玛使用）
+    annualized_return_pct = None
+    if has_capital and days >= 1 and initial > 0:
+        final_eq = curve[-1][1] if curve else float(initial)
+        if final_eq > 0:
+            annualized_return_pct = round(((final_eq / initial) ** (365.0 / days) - 1) * 100, 2)
+
+    # ---- 6. 卡玛比率 = 年化收益率 / 最大回撤
+    calmar_ratio = None
+    if annualized_return_pct is not None and max_drawdown_pct and max_drawdown_pct > 0:
+        calmar_ratio = round(annualized_return_pct / max_drawdown_pct, 3)
+
+    # ---- 7. 夏普比率（日收益率，无风险利率取 0，年化 sqrt(252)）
+    sharpe_ratio = None
+    if has_capital and len(curve) >= 2:
+        rets = []
+        prev = None
+        for _, v in curve:
+            if prev is not None and prev > 0:
+                rets.append((v - prev) / prev)
+            prev = v
+        if len(rets) >= 2:
+            mean_r = sum(rets) / len(rets)
+            var_r = sum((r - mean_r) ** 2 for r in rets) / (len(rets) - 1)
+            std_r = math.sqrt(var_r)
+            if std_r > 0:
+                sharpe_ratio = round(mean_r / std_r * math.sqrt(252), 3)
+
+    # ---- 8. 日平均仓位（含空仓日 0%，反映阶段资金利用率）
+    avg_daily_position_pct = None
+    if has_capital:
+        day_invested: dict = defaultdict(float)
+        for t in trades:
+            inv = t.invested_capital or 0
+            if inv <= 0:
+                continue
+            d0 = max(t.entry_time.date(), start.date())
+            d1 = min((t.exit_time or end).date(), end.date())
+            d = d0
+            while d <= d1:
+                day_invested[d] += inv
+                d += timedelta(days=1)
+        ratios = []
+        d = start.date()
+        for _ in range(days):
+            bal = balance_at(db, user_id, d)
+            if bal and bal > 0:
+                ratios.append(day_invested.get(d, 0.0) / bal)
+            d += timedelta(days=1)
+        if ratios:
+            avg_daily_position_pct = round(sum(ratios) / len(ratios) * 100, 2)
+
+    return {
+        "avg_pl_ratio": avg_pl_ratio,
+        "avg_daily_position_pct": avg_daily_position_pct,
+        "total_return_pct": total_return_pct,
+        "max_drawdown_pct": max_drawdown_pct,
+        "max_weekly_drawdown_pct": max_weekly_drawdown_pct,
+        "calmar_ratio": calmar_ratio,
+        "sharpe_ratio": sharpe_ratio,
+        "has_capital": has_capital,
+    }
+
+
 def period_stats(
     db: Session,
     start: datetime,
@@ -105,6 +258,7 @@ def period_stats(
     return {
         "period": {"start": start.isoformat(), "end": end.isoformat()},
         "summary": _calc_summary(trades),
+        "metrics": _calc_metrics(db, trades, start, end, user_id),
         "by_day": day_rows,
         "by_instrument": instrument_rows,
     }

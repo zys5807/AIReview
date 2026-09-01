@@ -284,6 +284,21 @@ export default function Dashboard() {
       },
     },
     {
+      title: '收益率',
+      key: 'returnRate',
+      width: 90,
+      render: (_, r) => {
+        if (r.pnl === null || r.pnl === undefined || !r.invested_capital) return '-'
+        const rate = (r.pnl / r.invested_capital) * 100
+        return (
+          <Typography.Text type={rate >= 0 ? 'danger' : 'success'} strong>
+            {rate >= 0 ? '+' : ''}
+            {rate.toFixed(2)}%
+          </Typography.Text>
+        )
+      },
+    },
+    {
       title: '操作',
       key: 'action',
       width: 220,

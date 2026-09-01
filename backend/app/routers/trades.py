@@ -9,12 +9,15 @@ from ..database import get_db
 from ..models import Screenshot, Trade, TradePositionAction, TradeScreenshot, User
 from ..routers.auth import get_current_user
 from ..schemas import (
+    CapitalCalcIn,
+    CapitalCalcOut,
     MessageOut,
     TradeCreate,
     TradeListOut,
     TradeOut,
     TradeUpdate,
 )
+from ..services.investment import compute_invested_capital, resolve_multiplier
 
 # 品种分类
 INSTRUMENT_TYPES = ["A股", "商品期货", "数字货币"]
@@ -85,6 +88,15 @@ def create_trade(
     screenshots = payload.pop("screenshots", [])
     position_actions = payload.pop("position_actions", [])
     payload["user_id"] = user.id
+    # 占用资金未提供时自动计算（按品种类型/代码/价格/数量）
+    if payload.get("invested_capital") is None:
+        payload["invested_capital"] = compute_invested_capital(
+            payload.get("instrument_type", ""),
+            payload.get("instrument_code", ""),
+            payload.get("instrument_name", ""),
+            payload.get("entry_price"),
+            payload.get("volume") or 1.0,
+        )
     trade = Trade(**payload)
     db.add(trade)
     db.flush()  # 先拿到 trade.id
@@ -122,6 +134,25 @@ def list_trades(
         .all()
     )
     return {"total": total, "items": items}
+
+
+@router.post("/calc-capital", response_model=CapitalCalcOut)
+def calc_capital(
+    data: CapitalCalcIn,
+    user: User = Depends(get_current_user),
+):
+    """按品种自动计算占用资金（前端录入实时预填用，单一数据源在后端）"""
+    invested = compute_invested_capital(
+        data.instrument_type,
+        data.instrument_code,
+        data.instrument_name,
+        data.entry_price,
+        data.volume,
+    )
+    mult, matched = resolve_multiplier(
+        data.instrument_code, data.instrument_name
+    ) if data.instrument_type == "商品期货" else (1.0, None)
+    return {"invested_capital": invested, "matched_name": matched, "multiplier": mult}
 
 
 @router.get("/stats", response_model=dict)
@@ -192,6 +223,15 @@ def update_trade(
     payload = data.model_dump(exclude_unset=True)
     screenshots = payload.pop("screenshots", None)
     position_actions = payload.pop("position_actions", None)
+    # 占用资金未显式修改时，按更新后的品种/价格/数量重新自动计算
+    if "invested_capital" not in payload:
+        merged = {**payload, "instrument_type": payload.get("instrument_type", trade.instrument_type),
+                  "instrument_code": payload.get("instrument_code", trade.instrument_code),
+                  "instrument_name": payload.get("instrument_name", trade.instrument_name)}
+        payload["invested_capital"] = compute_invested_capital(
+            merged["instrument_type"], merged["instrument_code"], merged["instrument_name"],
+            merged.get("entry_price", trade.entry_price), merged.get("volume", trade.volume) or 1.0,
+        )
     for field, value in payload.items():
         setattr(trade, field, value)
     if screenshots is not None:
