@@ -378,6 +378,42 @@ class PhaseReview(Base):
     )
 
 
+class MarketReview(Base):
+    """阶段盘面综述（V1.008.2 功能1）
+
+    按 品种类型 × 起止日期 生成一份供写阶段总结参考的盘面综述报告：
+    - A股：大盘指数（价格/区间涨跌/振幅/量）+ 行业/概念板块表现 + 区间领涨个股
+    - 商品期货：各板块与主要活跃品种的区间表现（按新浪主连日K计算）
+    - 数字货币：BTC/ETH 区间表现（Gate.io 日K）
+    唯一约束 (user_id, instrument_type, start_date, end_date)：同键一条，重新生成覆盖。
+    content: 完整 markdown 报告（数据速览为程序生成，点评为 AI 生成，数值以速览为准）
+    data_json: 采集的原始结构化行情快照（可回看/核对口径）
+    note: 生成时的数据缺失/降级说明
+    """
+
+    __tablename__ = "market_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "instrument_type", "start_date", "end_date",
+            name="uq_market_review_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, default=None, nullable=True, index=True)
+    instrument_type: Mapped[str] = mapped_column(String(20), default="A股")  # A股/商品期货/数字货币
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    title: Mapped[str] = mapped_column(String(100), default="")  # 如：2026年8月 · A股 盘面综述
+    content: Mapped[str] = mapped_column(Text, default="")  # markdown 报告
+    data_json: Mapped[str] = mapped_column(Text, default="")  # 结构化行情快照 JSON
+    note: Mapped[str] = mapped_column(Text, default="")  # 数据口径/缺失说明
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
 class FuturesConfig(Base):
     """期货品种参数配置（合约乘数 + 保证金率）
 

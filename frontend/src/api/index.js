@@ -180,6 +180,20 @@ export const getPeriodStats = (params = {}) =>
 export const getScoreTrend = (params = {}) =>
   client.get('/api/analysis/scores', { params }).then((r) => r.data)
 
+// ---------- 盘面综述（V1.008.2 功能1：阶段盘面综述生成/回看） ----------
+export const generateMarketReview = (data) =>
+  // A股全量采集+AI点评最长可达 2 分钟，单独放宽超时
+  client.post('/api/market-reviews/generate', data, { timeout: 180000 }).then((r) => r.data)
+
+export const listMarketReviews = (params = {}) =>
+  client.get('/api/market-reviews', { params }).then((r) => r.data)
+
+export const getMarketReview = (id) =>
+  client.get(`/api/market-reviews/${id}`).then((r) => r.data)
+
+export const deleteMarketReview = (id) =>
+  client.delete(`/api/market-reviews/${id}`).then((r) => r.data)
+
 // ---------- 应用设置（API 配置，软件内管理） ----------
 export const getLlmSettings = () => client.get('/api/settings/llm').then((r) => r.data)
 

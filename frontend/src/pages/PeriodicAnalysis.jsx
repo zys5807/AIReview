@@ -29,9 +29,11 @@ import {
   WarningOutlined,
   QuestionCircleOutlined,
   SyncOutlined,
+  FundOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { getPeriodStats, getScoreTrend, periodAiAnalysis } from '../api'
+import MarkdownView from '../components/MarkdownView'
 
 const { RangePicker } = DatePicker
 
@@ -265,14 +267,16 @@ export default function PeriodicAnalysis() {
             options={CURRENCY_OPTIONS}
           />
           <Button icon={<ReloadOutlined />} onClick={loadAll} loading={loading} />
-          <Button
-            type="primary"
-            icon={<RobotOutlined />}
-            onClick={handleAiAnalyze}
-            loading={aiLoading}
-          >
-            AI 阶段分析
-          </Button>
+          <Tooltip title="自动联网采集该阶段盘面概览并注入分析，加深对交易记录的理解（约多 10~20 秒；失败时自动降级，不影响分析）">
+            <Button
+              type="primary"
+              icon={<RobotOutlined />}
+              onClick={handleAiAnalyze}
+              loading={aiLoading}
+            >
+              AI 阶段分析
+            </Button>
+          </Tooltip>
         </Space>
       </Card>
 
@@ -739,6 +743,40 @@ export default function PeriodicAnalysis() {
               }
               description={aiResult.summary || '（AI 未生成总结）'}
             />
+
+            {/* V1.008.2 功能2：AI 分析自动结合本阶段盘面 */}
+            {(aiResult.market_data_ok ||
+              aiResult.market_context ||
+              aiResult.market_insights?.length > 0) && (
+              <>
+                <Divider orientation="left" plain>
+                  <FundOutlined style={{ color: '#1D9E75' }} /> 结合本阶段盘面的解读
+                </Divider>
+                {aiResult.market_data_ok ? (
+                  <Tag color="green" style={{ marginBottom: 8 }}>
+                    已联网注入该阶段盘面环境
+                  </Tag>
+                ) : (
+                  <Tag style={{ marginBottom: 8 }}>
+                    盘面数据未注入（联网采集失败，本次仅基于交易记录分析）
+                  </Tag>
+                )}
+                {aiResult.market_context && (
+                  <MarkdownView text={aiResult.market_context} style={{ marginBottom: 4 }} />
+                )}
+                {aiResult.market_insights?.length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={aiResult.market_insights}
+                    renderItem={(item) => (
+                      <List.Item style={{ fontSize: 13 }}>
+                        <Typography.Text style={{ color: '#1D9E75' }}>◆ {item}</Typography.Text>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </>
+            )}
 
             <Divider orientation="left" plain>
               <TrophyOutlined style={{ color: '#f0b90b' }} /> 表现最好的交易

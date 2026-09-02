@@ -28,6 +28,9 @@ import {
   SyncOutlined,
   ClearOutlined,
   RobotOutlined,
+  BarChartOutlined,
+  CopyOutlined,
+  DeleteOutlined,
 } from '@ant-design/icons'
 import {
   listPhaseReviews,
@@ -35,8 +38,12 @@ import {
   updatePhaseReview,
   deletePhaseReview,
   parsePhaseReviewFile,
+  listMarketReviews,
+  generateMarketReview,
+  deleteMarketReview,
 } from '../api'
 import { useDraft } from '../utils/draft'
+import MarkdownView from '../components/MarkdownView'
 
 const INSTRUMENT_TYPES = ['A股', '商品期货', '数字货币']
 
@@ -85,6 +92,12 @@ export default function PeriodSummary() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [viewReview, setViewReview] = useState(null)
   const fileInputRef = useRef(null)
+  // 盘面综述（V1.008.2 功能1）
+  const [mrOpen, setMrOpen] = useState(false)
+  const [mrLoading, setMrLoading] = useState(false)
+  const [mrGenerating, setMrGenerating] = useState(false)
+  const [mrReview, setMrReview] = useState(null) // 当前选中键下的已有综述
+  const [mrError, setMrError] = useState('')
 
   // ===== 频率粒度归一（周=周一~周日；月=1号~月末；季=季初月1号~季末月末；年=1月1日~12月31日，范围含结束日）=====
   const normalizePeriod = useCallback((mode, v) => {
@@ -260,6 +273,72 @@ export default function PeriodSummary() {
     message.info('已清空草稿')
   }
 
+  // ===== 盘面综述（V1.008.2 功能1）：按 频率→起止×品种 生成/回看 =====
+  const openMarketReview = async () => {
+    const p = normalizePeriod(periodMode, periodDate)
+    if (!p) {
+      message.warning('请先选择周期')
+      return
+    }
+    setMrOpen(true)
+    setMrReview(null)
+    setMrError('')
+    setMrLoading(true)
+    try {
+      const params = { start: p.start, end: p.end }
+      if (summaryType) params.instrument_type = summaryType
+      const list = await listMarketReviews(params)
+      // 同键唯一：''（通用）与具体品种区分，取完全匹配项
+      const hit = list.find((r) => (r.instrument_type || '') === (summaryType || '')) || null
+      setMrReview(hit)
+    } catch (e) {
+      /* 拦截器已提示 */
+    } finally {
+      setMrLoading(false)
+    }
+  }
+
+  const handleGenerateMarketReview = async () => {
+    const p = normalizePeriod(periodMode, periodDate)
+    if (!p) return
+    setMrGenerating(true)
+    setMrError('')
+    try {
+      const review = await generateMarketReview({
+        instrument_type: summaryType || '',
+        start: p.start,
+        end: p.end,
+      })
+      setMrReview(review)
+      message.success(mrReview ? '已重新生成并覆盖' : '盘面综述已生成')
+    } catch (e) {
+      setMrError(e?.response?.data?.detail || '生成失败，请稍后重试')
+    } finally {
+      setMrGenerating(false)
+    }
+  }
+
+  const handleDeleteMarketReview = async () => {
+    if (!mrReview) return
+    try {
+      await deleteMarketReview(mrReview.id)
+      message.success('已删除盘面综述')
+      setMrReview(null)
+    } catch (e) {
+      /* 拦截器已提示 */
+    }
+  }
+
+  const handleCopyMarketReview = async () => {
+    if (!mrReview) return
+    try {
+      await navigator.clipboard.writeText(mrReview.content || '')
+      message.success('已复制全文，可直接粘贴到写总结')
+    } catch (e) {
+      message.warning('复制失败，请手动选择复制')
+    }
+  }
+
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* 功能说明 */}
@@ -267,13 +346,15 @@ export default function PeriodSummary() {
         type="info"
         showIcon
         icon={<FileTextOutlined />}
-        message="手写阶段复盘总结"
+        message="手写阶段复盘总结 + 阶段盘面综述"
         description={
           <span>
             按 <b>周 / 月 / 季 / 年 × 品种</b> 手写复盘总结（支持导入 .txt / .md / .docx）。
-            写完后到【阶段复盘】页点击 <b>AI 阶段分析</b>，AI 会自动参考本模块的历史总结，
-            并输出<b>改进落实情况追踪</b>（本期 vs 前几期连续对比），结果自动保存回对应总结。
-            编辑内容<b>自动保存草稿</b>，误关弹窗不丢失，重新打开自动恢复。
+            点击 <b>「盘面综述」</b> 可按当前所选周期与品种自动生成
+            <b>行情数据速览 + AI 点评</b>报告，供写总结时参考（联网抓取，A股约 20~90 秒）。
+            写完后到【阶段复盘】页点击 <b>AI 阶段分析</b>，AI 会自动参考本模块的历史总结、
+            <b>自动结合该阶段盘面环境</b>解读交易，并输出<b>改进落实情况追踪</b>。
+            编辑内容<b>自动保存草稿</b>，误关弹窗不丢失。
           </span>
         }
       />
@@ -330,6 +411,16 @@ export default function PeriodSummary() {
               ...INSTRUMENT_TYPES.map((t) => ({ value: t, label: t })),
             ]}
           />
+          <Button
+            size="small"
+            type="primary"
+            ghost
+            icon={<BarChartOutlined />}
+            disabled={!periodDate}
+            onClick={openMarketReview}
+          >
+            盘面综述
+          </Button>
           {curReview ? (
             <>
               <Button size="small" icon={<EditOutlined />} onClick={openEdit}>
@@ -557,14 +648,126 @@ export default function PeriodSummary() {
         })()}
       </Modal>
 
+      {/* 盘面综述（V1.008.2 功能1）生成/回看 */}
+      <Modal
+        title={
+          <Space>
+            <BarChartOutlined style={{ color: '#534AB7' }} />
+            阶段盘面综述
+          </Space>
+        }
+        open={mrOpen}
+        onCancel={() => setMrOpen(false)}
+        width={860}
+        footer={
+          <Space>
+            {mrReview && (
+              <>
+                <Popconfirm
+                  title="删除该盘面综述？"
+                  description="删除后需要重新生成才能恢复"
+                  onConfirm={handleDeleteMarketReview}
+                >
+                  <Button size="small" danger icon={<DeleteOutlined />}>
+                    删除
+                  </Button>
+                </Popconfirm>
+                <Button size="small" icon={<CopyOutlined />} onClick={handleCopyMarketReview}>
+                  复制全文
+                </Button>
+              </>
+            )}
+            <Button
+              type="primary"
+              loading={mrGenerating}
+              onClick={handleGenerateMarketReview}
+              icon={mrReview ? <SyncOutlined /> : <BarChartOutlined />}
+            >
+              {mrGenerating ? '采集中…' : mrReview ? '重新生成（覆盖）' : '生成盘面综述'}
+            </Button>
+          </Space>
+        }
+      >
+        <Spin spinning={mrLoading}>
+          {(() => {
+            const p = normalizePeriod(periodMode, periodDate) || {}
+            const instLabel = summaryType || '三大市场'
+            return (
+              <div style={{ maxHeight: '65vh', overflowY: 'auto', paddingRight: 6 }}>
+                <Space wrap style={{ marginBottom: 8 }}>
+                  <Tag color="geekblue">{instLabel}</Tag>
+                  <Tag color="purple">
+                    {PERIOD_META[periodMode]?.label || periodMode}：{p.start} ~ {p.end}
+                  </Tag>
+                  {mrReview && (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      生成于 {mrReview.updated_at || mrReview.created_at}
+                    </Typography.Text>
+                  )}
+                </Space>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 10 }}
+                  message={
+                    <span>
+                      联网抓取公开行情生成 <b>{instLabel}</b> 阶段盘面综述（数据速览 + AI 点评），
+                      供写阶段复盘总结参考。生成耗时约 20~90 秒（A股较久），请耐心等待；
+                      同时间段重复生成会<b>覆盖</b>旧报告。
+                    </span>
+                  }
+                />
+                {mrError && (
+                  <Alert type="error" showIcon style={{ marginBottom: 10 }} message={mrError} />
+                )}
+                {mrReview ? (
+                  <>
+                    <Typography.Title level={5} style={{ marginTop: 4 }}>
+                      {mrReview.title}
+                    </Typography.Title>
+                    <MarkdownView text={mrReview.content} />
+                  </>
+                ) : (
+                  !mrLoading &&
+                  !mrGenerating && (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description="该时间段还没有盘面综述，点击下方「生成盘面综述」开始"
+                      style={{ margin: '24px 0' }}
+                    />
+                  )
+                )}
+                {mrGenerating && (
+                  <div style={{ textAlign: 'center', padding: '30px 0' }}>
+                    <Spin />
+                    <div style={{ marginTop: 8, color: '#8c8c8c', fontSize: 13 }}>
+                      正在采集行情并生成 AI 点评，预计 20~90 秒…
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </Spin>
+      </Modal>
+
       {/* 底部提示：AI 联动入口在阶段复盘页 */}
       <Card size="small" style={{ background: '#fafafa' }}>
-        <Space>
-          <RobotOutlined style={{ color: '#534AB7' }} />
-          <Typography.Text type="secondary">
-            需要做 AI 阶段复盘？→ 到【阶段复盘】页选择时间段与品种后点击「AI 阶段分析」，
-            将自动参考这里的手写总结，并输出「改进落实情况追踪」。
-          </Typography.Text>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <Space>
+            <RobotOutlined style={{ color: '#534AB7' }} />
+            <Typography.Text type="secondary">
+              需要做 AI 阶段复盘？→ 到【阶段复盘】页选择时间段与品种后点击「AI 阶段分析」，
+              将自动参考这里的手写总结、自动联网结合该阶段盘面环境，并输出「改进落实情况追踪」。
+            </Typography.Text>
+          </Space>
+          <Space style={{ paddingLeft: 24 }}>
+            <BarChartOutlined style={{ color: '#534AB7' }} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              盘面综述报告（含数据速览与 AI 点评）在【复盘总结】页生成后可复制全文、粘贴到下方编辑框，
+              或作为 AI 阶段分析的参考素材。
+            </Typography.Text>
+          </Space>
         </Space>
       </Card>
     </Space>

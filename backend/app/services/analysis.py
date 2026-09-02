@@ -97,7 +97,9 @@ def analyze_trade(trade: Trade, system: TradingSystem | None, db: Session | None
 # ---------- 阶段性复盘分析 ----------
 PHASE_OUTPUT_FORMAT = """请严格按照以下 JSON 格式输出（不要输出其他文字）：
 {
-  "summary": "该阶段整体表现的一句话结论（结合盈亏、执行、评分）",
+  "summary": "该阶段整体表现的一句话结论（结合盈亏、执行、评分与市场环境）",
+  "market_context": "本阶段市场环境的客观概述（若提供了盘面数据：用1-2句话概括大盘/品种大环境；未提供则写'本期未注入盘面数据'）",
+  "market_insights": ["结合市场环境对交易的解读 2-4 条：方向是否顺势、板块/品种选择、波动环境对执行与止损的影响等（无盘面数据时给出空数组）"],
   "best_trades": ["表现最好的1-2笔交易及具体原因"],
   "worst_trades": ["表现最差的1-2笔交易及具体原因"],
   "patterns": ["交易者反复出现的行为/执行模式，如：追涨杀跌、入场犹豫、不设止损、提前止盈等"],
@@ -109,9 +111,12 @@ PHASE_OUTPUT_FORMAT = """请严格按照以下 JSON 格式输出（不要输出�
 
 
 def _build_phase_messages(
-    trades, systems_text: str, stats: dict | None = None, manual: list | None = None
+    trades, systems_text: str, stats: dict | None = None, manual: list | None = None,
+    market_text: str | None = None,
 ) -> list[dict]:
-    """构造阶段性分析的消息列表；manual: 手写总结列表（V1.008，时间顺序，最后一条为本期）"""
+    """构造阶段性分析的消息列表；manual: 手写总结列表（V1.008，时间顺序，最后一条为本期）
+    market_text: V1.008.2 盘面环境概览（可选，注入后 AI 结合行情解读交易）
+    """
     lines = [
         "你是专业的交易复盘分析师。请对用户在一段时间内的所有交易做一次【阶段性复盘分析】，",
         "找出整体表现、反复出现的问题、交易者行为模式，以及交易系统/策略本身可优化的方向。",
@@ -177,6 +182,9 @@ def _build_phase_messages(
 
     if systems_text:
         lines += ["", "=== 用户使用的交易系统规则 ===", systems_text]
+
+    if market_text:
+        lines += ["", market_text]
 
     lines += [
         "",
@@ -282,6 +290,7 @@ def phase_summary(
     currency: str = "CNY",
     include_manual: bool = True,
     period_type: str = "custom",
+    include_market: bool = True,
 ) -> dict:
     """对一段时间内该用户的所有交易做 AI 阶段性复盘分析。
 
@@ -289,6 +298,8 @@ def phase_summary(
     V1.007.1：支持币种筛选（按交易盈亏归属币种过滤，数字货币→USD，A股/期货→CNY）。
     V1.008：include_manual=True 时注入本期+历史最近3期手写阶段总结，输出 continuity 追踪，
             并把 AI 结果保存到对应 phase_reviews 记录（决策4）。
+    V1.008.2：include_market=True（默认）时自动联网采集轻量盘面概览注入 prompt，
+            输出 market_context / market_insights 字段；采集失败静默降级不影响原分析。
     """
     from ..models import ReviewReport
     from .account import TRADE_CURRENCY_MAP
@@ -366,7 +377,17 @@ def phase_summary(
     if include_manual:
         manual = _load_manual_reviews(db, user_id, start, end, instrument_type)
 
-    messages = _build_phase_messages(trades, "\n".join(systems_lines), stats, manual)
+    # V1.008.2：自动联网采集轻量盘面概览（失败静默降级，不阻断交易分析）
+    market_text = None
+    if include_market:
+        try:
+            from .market_review import quick_market_overview_text
+
+            market_text = quick_market_overview_text(user_id, start, end, instrument_type) or None
+        except Exception:
+            market_text = None
+
+    messages = _build_phase_messages(trades, "\n".join(systems_lines), stats, manual, market_text)
     try:
         raw = chat(messages, temperature=0.4, max_tokens=3000, db=db)
     except LLMError as e:
@@ -417,6 +438,9 @@ def phase_summary(
 
     result = {
         "summary": str(data.get("summary", "")),
+        "market_context": str(data.get("market_context", "")),
+        "market_insights": _str_list(data.get("market_insights")),
+        "market_data_ok": bool(market_text),
         "best_trades": _str_list(data.get("best_trades")),
         "worst_trades": _str_list(data.get("worst_trades")),
         "patterns": _str_list(data.get("patterns")),
