@@ -22,7 +22,7 @@ futures_sync.start_background_sync()
 app = FastAPI(
     title="AIReviewSystem",
     description="AI交易复盘系统 - 单机/局域网多用户版",
-    version="1.0.8.2",
+    version="1.0.8.3",
 )
 
 # CORS：允许前端开发服务器访问
@@ -59,7 +59,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "AIReviewSystem",
-        "version": "1.0.8.2",
+        "version": "1.0.8.3",
         "frontend_built": _HAS_DIST,
     }
 

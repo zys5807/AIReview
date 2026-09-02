@@ -38,3 +38,4 @@ test_*.py
 
 # 日志
 *.log
+backend/app.db.bak_*

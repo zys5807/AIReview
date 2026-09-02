@@ -19,6 +19,7 @@ import {
   List,
   Divider,
   Alert,
+  Tooltip,
 } from 'antd'
 import {
   FileTextOutlined,
@@ -31,6 +32,8 @@ import {
   BarChartOutlined,
   CopyOutlined,
   DeleteOutlined,
+  EyeOutlined,
+  ExportOutlined,
 } from '@ant-design/icons'
 import {
   listPhaseReviews,
@@ -65,6 +68,26 @@ const PERIOD_TAG_META = {
 
 dayjs.extend(quarterOfYear)
 
+// 盘面综述按起止日期反推所属频率（综述均按归一化周期生成：周=周一~周日、月=1号~月末、季/年同理）
+const inferPeriodType = (start, end) => {
+  const s = dayjs(start)
+  const e = dayjs(end)
+  if (!s.isValid() || !e.isValid()) return 'custom'
+  // 年（须先于月判断：1-1~12-31 同时满足月首/月末）
+  if (s.isSame(s.startOf('year'), 'day') && e.isSame(e.endOf('year'), 'day')) return 'year'
+  // 周：跨 6 天且起周一、止周日
+  if (e.diff(s, 'day') === 6 && s.day() === 1 && e.day() === 0) return 'week'
+  // 月：月初 ~ 月末
+  if (s.isSame(s.startOf('month'), 'day') && e.isSame(e.endOf('month'), 'day')) return 'month'
+  // 季：季首月1号 ~ 季末月末
+  const qStart = s.month(Math.floor(s.month() / 3) * 3).startOf('month')
+  const qEnd = s.month(Math.floor(s.month() / 3) * 3 + 2).endOf('month')
+  if (s.isSame(qStart, 'day') && e.isSame(qEnd, 'day')) return 'quarter'
+  return 'custom'
+}
+// 盘面综述条目可跳转频率（与主卡 Radio 对应）；'custom'（任意日期范围）不可跳
+const JUMPABLE_PERIODS = ['week', 'month', 'quarter', 'year']
+
 // 草稿缓存 key：阶段总结（周/月 × 起止 × 品种）
 const draftKeyOf = (mode, p, instrumentType) =>
   `phase_summary:${mode}:${p.start}~${p.end}:${instrumentType || 'all'}`
@@ -72,9 +95,10 @@ const draftKeyOf = (mode, p, instrumentType) =>
 export default function PeriodSummary() {
   const [periodMode, setPeriodMode] = useState('week') // week / month / quarter / year
   const [periodDate, setPeriodDate] = useState(() => dayjs())
-  const [summaryType, setSummaryType] = useState('') // ''=全部/通用、A股/商品期货/数字货币
+  const [summaryType, setSummaryType] = useState('A股') // A股/商品期货/数字货币（默认 A股，不设通用）
   const [curReview, setCurReview] = useState(null)
   const [allReviews, setAllReviews] = useState([])
+  const [marketReviews, setMarketReviews] = useState([]) // V1.008.3：历史弹窗混合展示盘面综述
   const [reviewLoading, setReviewLoading] = useState(false)
   // 历史筛选（V1.008.1：按频率 + 品种过滤）
   const [histType, setHistType] = useState('') // ''=全部 / week / month / quarter / year
@@ -90,7 +114,8 @@ export default function PeriodSummary() {
   const [importing, setImporting] = useState(false)
   // 历史
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [viewReview, setViewReview] = useState(null)
+  const [viewReview, setViewReview] = useState(null) // 历史阶段总结详情
+  const [viewMarket, setViewMarket] = useState(null) // V1.008.3：历史盘面综述详情
   const fileInputRef = useRef(null)
   // 盘面综述（V1.008.2 功能1）
   const [mrOpen, setMrOpen] = useState(false)
@@ -162,7 +187,12 @@ export default function PeriodSummary() {
       const params = {}
       if (histType) params.period_type = histType
       if (histInstrument) params.instrument_type = histInstrument
-      setAllReviews(await listPhaseReviews(params))
+      const [phases, markets] = await Promise.all([
+        listPhaseReviews(params),
+        listMarketReviews(histInstrument ? { instrument_type: histInstrument } : {}),
+      ])
+      setAllReviews(phases)
+      setMarketReviews(markets)
     } catch (e) {
       /* 拦截器已提示 */
     } finally {
@@ -174,6 +204,48 @@ export default function PeriodSummary() {
     loadReview()
     loadHistory()
   }, [loadReview, loadHistory])
+
+  // ===== 历史弹窗混合时间线：阶段总结 + 盘面综述（按结束日倒序） =====
+  const mergedItems = useMemo(() => {
+    const phases = allReviews.map((r) => ({ kind: 'phase', ...r }))
+    const markets = marketReviews
+      .map((r) => ({ kind: 'market', ...r, period_type: inferPeriodType(r.start, r.end) }))
+      .filter((m) => !histType || m.period_type === histType)
+    return [...phases, ...markets].sort((a, b) => String(b.end).localeCompare(String(a.end)))
+  }, [allReviews, marketReviews, histType])
+
+  // ===== V1.008.3 历史条目跳转：定位主卡（我的阶段总结）到 频率 × 日期 × 品种 =====
+  const jumpToPeriod = (item) => {
+    const pt = item.period_type
+    if (!JUMPABLE_PERIODS.includes(pt)) return
+    const inst = item.instrument_type || ''
+    if (!INSTRUMENT_TYPES.includes(inst)) {
+      message.info('该记录没有绑定具体品种，无法定位到「我的阶段总结」，请按品种重新总结')
+      return
+    }
+    setHistoryOpen(false)
+    setViewReview(null)
+    setViewMarket(null)
+    setPeriodMode(pt)
+    setPeriodDate(dayjs(item.start))
+    setSummaryType(inst)
+    message.success(
+      `已定位到 ${PERIOD_META[pt].label} × ${inst}（${item.start} ~ ${item.end}），可在上方编辑或写总结`
+    )
+  }
+
+  const openHistoryItem = (item) => {
+    if (item.kind === 'market') setViewMarket(item)
+    else setViewReview(item)
+  }
+
+  // 历史条目「去编辑/定位」按钮可用性（kind: phase/market）
+  const canJumpItem = (item) =>
+    JUMPABLE_PERIODS.includes(item.period_type) && INSTRUMENT_TYPES.includes(item.instrument_type || '')
+  const jumpDisabledTip = (item) => {
+    if (!JUMPABLE_PERIODS.includes(item.period_type)) return '该记录无固定周/月/季/年周期，无法直接定位'
+    return '该记录未绑定具体品种，请按品种重新总结'
+  }
 
   // ===== 写 / 编辑：打开弹窗，若有草稿则自动恢复 =====
   const openEdit = () => {
@@ -339,6 +411,17 @@ export default function PeriodSummary() {
     }
   }
 
+  // V1.008.3：历史盘面综述详情 → 复制全文
+  const handleCopyViewMarket = async () => {
+    if (!viewMarket) return
+    try {
+      await navigator.clipboard.writeText(viewMarket.content || '')
+      message.success('已复制全文，可直接粘贴到写总结')
+    } catch (e) {
+      message.warning('复制失败，请手动选择复制')
+    }
+  }
+
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {/* 功能说明 */}
@@ -380,7 +463,7 @@ export default function PeriodSummary() {
               loadHistory() // 打开时刷新（含筛选条件）
             }}
           >
-            历史总结（{allReviews.length}）
+            历史总结（{mergedItems.length}）
           </Button>
         }
       >
@@ -401,15 +484,10 @@ export default function PeriodSummary() {
             placeholder={PERIOD_META[periodMode].placeholder}
           />
           <Select
-            allowClear
-            placeholder="全部品种"
-            style={{ width: 130 }}
+            style={{ width: 132 }}
             value={summaryType}
             onChange={setSummaryType}
-            options={[
-              { value: '', label: '全部/通用' },
-              ...INSTRUMENT_TYPES.map((t) => ({ value: t, label: t })),
-            ]}
+            options={INSTRUMENT_TYPES.map((t) => ({ value: t, label: t }))}
           />
           <Button
             size="small"
@@ -543,13 +621,13 @@ export default function PeriodSummary() {
         </Space>
       </Modal>
 
-      {/* 历史总结列表（V1.008.1：频率 + 品种筛选） */}
+      {/* 历史总结列表（V1.008.1：频率 + 品种筛选；V1.008.3：与盘面综述混合时间线 + 跳转） */}
       <Modal
-        title={`历史阶段总结（${allReviews.length}）`}
+        title={`历史总结（${mergedItems.length}）`}
         open={historyOpen}
         onCancel={() => setHistoryOpen(false)}
         footer={null}
-        width={760}
+        width={820}
       >
         <Space wrap style={{ marginBottom: 12 }}>
           <Select
@@ -574,33 +652,73 @@ export default function PeriodSummary() {
             options={INSTRUMENT_TYPES.map((t) => ({ value: t, label: t }))}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            选 AI 分析生成的记录显示在「全部频率」中
+            阶段总结与盘面综述按时间倒序混合展示；综述按起止日期自动识别频率，
+            AI 生成（无固定周期）的记录仅出现在「全部频率」
           </Typography.Text>
         </Space>
         <Spin spinning={histLoading}>
           <List
             size="small"
-            dataSource={allReviews}
-            locale={{ emptyText: '暂无总结，先写一篇吧' }}
+            dataSource={mergedItems}
+            locale={{ emptyText: '暂无记录，可生成盘面综述或写一篇阶段总结' }}
             renderItem={(r) => {
+              const isMarket = r.kind === 'market'
               const pt = PERIOD_TAG_META[r.period_type] || PERIOD_TAG_META.custom
+              const canJump = canJumpItem(r)
+              const jumpBtn = (
+                <Tooltip
+                  title={
+                    canJump
+                      ? isMarket
+                        ? '定位到「我的阶段总结」对应周期，可写总结或重新生成综述'
+                        : '跳转到「我的阶段总结」并定位到该期编辑'
+                      : jumpDisabledTip(r)
+                  }
+                >
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<ExportOutlined />}
+                    disabled={!canJump}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      jumpToPeriod(r)
+                    }}
+                  >
+                    {isMarket ? '去写总结' : '去编辑'}
+                  </Button>
+                </Tooltip>
+              )
               return (
-                <List.Item style={{ cursor: 'pointer' }} onClick={() => setViewReview(r)}>
+                <List.Item style={{ cursor: 'pointer' }} onClick={() => openHistoryItem(r)} actions={[jumpBtn]}>
                   <List.Item.Meta
                     title={
                       <Space wrap>
-                        <Tag color={pt.color}>{pt.label}</Tag>
+                        {isMarket && <Tag color="gold">盘面综述</Tag>}
+                        {pt.label === 'AI' ? (
+                          !isMarket && <Tag color={pt.color}>AI 分析</Tag>
+                        ) : (
+                          <Tag color={pt.color}>{pt.label}复盘</Tag>
+                        )}
                         <Typography.Text strong style={{ fontSize: 13 }}>
                           {r.start} ~ {r.end}
                         </Typography.Text>
                         {r.instrument_type && <Tag color="geekblue">{r.instrument_type}</Tag>}
                         {r.title && <Typography.Text type="secondary">{r.title}</Typography.Text>}
-                        {r.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
+                        {!isMarket && r.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
                       </Space>
                     }
                     description={
                       <Typography.Text type="secondary" ellipsis style={{ fontSize: 12 }}>
-                        {r.content || (r.has_ai_result ? '（仅 AI 分析结果）' : '（空）')}
+                        {isMarket
+                          ? r.content
+                            ? r.content
+                                .replace(/^#{1,6}\s*/m, '')
+                                .replace(/[*_`>]/g, '')
+                                .split('\n')
+                                .find((l) => l.trim()) || '（盘面综述已生成，点击查看全文）'
+                            : '（盘面综述已生成，点击查看全文）'
+                          : r.content || (r.has_ai_result ? '（仅 AI 分析结果）' : '（空）')}
                       </Typography.Text>
                     }
                   />
@@ -643,6 +761,72 @@ export default function PeriodSummary() {
                   </Typography.Paragraph>
                 </>
               )}
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* 历史盘面综述详情（V1.008.3） */}
+      <Modal
+        title={
+          <Space>
+            <BarChartOutlined style={{ color: '#534AB7' }} />
+            盘面综述
+          </Space>
+        }
+        open={!!viewMarket}
+        onCancel={() => setViewMarket(null)}
+        width={860}
+        footer={
+          <Space>
+            {viewMarket && (
+              <>
+                <Button size="small" icon={<CopyOutlined />} onClick={handleCopyViewMarket}>
+                  复制全文
+                </Button>
+                <Tooltip
+                  title={
+                    canJumpItem(viewMarket)
+                      ? '定位到「我的阶段总结」对应周期，可写总结或重新生成综述'
+                      : jumpDisabledTip(viewMarket)
+                  }
+                >
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<ExportOutlined />}
+                    disabled={!canJumpItem(viewMarket)}
+                    onClick={() => jumpToPeriod(viewMarket)}
+                  >
+                    去写阶段总结
+                  </Button>
+                </Tooltip>
+              </>
+            )}
+          </Space>
+        }
+      >
+        {viewMarket && (() => {
+          const pt = PERIOD_TAG_META[viewMarket.period_type] || PERIOD_TAG_META.custom
+          return (
+            <div style={{ maxHeight: '68vh', overflowY: 'auto', paddingRight: 6 }}>
+              <Space wrap style={{ marginBottom: 10 }}>
+                <Tag color="gold">盘面综述</Tag>
+                {pt.label !== 'AI' && <Tag color={pt.color}>{pt.label}复盘</Tag>}
+                <Tag color="purple">
+                  {viewMarket.start} ~ {viewMarket.end}
+                </Tag>
+                {viewMarket.instrument_type && <Tag color="geekblue">{viewMarket.instrument_type}</Tag>}
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  生成于 {viewMarket.updated_at || viewMarket.created_at}
+                </Typography.Text>
+              </Space>
+              {viewMarket.title && (
+                <Typography.Title level={5} style={{ marginTop: 0 }}>
+                  {viewMarket.title}
+                </Typography.Title>
+              )}
+              <MarkdownView text={viewMarket.content} />
             </div>
           )
         })()}
