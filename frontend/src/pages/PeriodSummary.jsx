@@ -207,7 +207,10 @@ export default function PeriodSummary() {
 
   // ===== 历史弹窗混合时间线：阶段总结 + 盘面综述（按结束日倒序） =====
   const mergedItems = useMemo(() => {
-    const phases = allReviews.map((r) => ({ kind: 'phase', ...r }))
+    // AI 阶段分析落库的占位记录（period_type='custom'，无手写内容）不进历史列表：历史只展示手写阶段总结与盘面综述
+    const phases = allReviews
+      .filter((r) => r.period_type !== 'custom')
+      .map((r) => ({ kind: 'phase', ...r }))
     const markets = marketReviews
       .map((r) => ({ kind: 'market', ...r, period_type: inferPeriodType(r.start, r.end) }))
       .filter((m) => !histType || m.period_type === histType)
@@ -705,7 +708,6 @@ export default function PeriodSummary() {
                         </Typography.Text>
                         {r.instrument_type && <Tag color="geekblue">{r.instrument_type}</Tag>}
                         {r.title && <Typography.Text type="secondary">{r.title}</Typography.Text>}
-                        {!isMarket && r.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
                       </Space>
                     }
                     description={
@@ -718,7 +720,7 @@ export default function PeriodSummary() {
                                 .split('\n')
                                 .find((l) => l.trim()) || '（盘面综述已生成，点击查看全文）'
                             : '（盘面综述已生成，点击查看全文）'
-                          : r.content || (r.has_ai_result ? '（仅 AI 分析结果）' : '（空）')}
+                          : r.content || '（空）'}
                       </Typography.Text>
                     }
                   />
@@ -742,25 +744,12 @@ export default function PeriodSummary() {
           return (
             <div>
               <Space wrap style={{ marginBottom: 12 }}>
-                <Tag color={pt.color}>
-                  {pt.label === 'AI' ? 'AI 分析' : `${pt.label}复盘`} {viewReview.start} ~ {viewReview.end}
-                </Tag>
+                <Tag color={pt.color}>{pt.label}复盘 {viewReview.start} ~ {viewReview.end}</Tag>
                 {viewReview.instrument_type && <Tag color="geekblue">{viewReview.instrument_type}</Tag>}
-                {viewReview.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
               </Space>
               <Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>
                 {viewReview.content || '（无手写内容）'}
               </Typography.Paragraph>
-              {viewReview.has_ai_result && (
-                <>
-                  <Divider orientation="left" plain>
-                    <SyncOutlined style={{ color: '#534AB7' }} /> AI 分析摘要
-                  </Divider>
-                  <Typography.Paragraph style={{ fontSize: 13, color: '#595959' }}>
-                    {viewReview.ai_summary || '（AI 分析结果已保存，可在该阶段重新分析查看）'}
-                  </Typography.Paragraph>
-                </>
-              )}
             </div>
           )
         })()}
