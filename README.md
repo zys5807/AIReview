@@ -6,7 +6,7 @@
 
 ## 下载安装
 
-- 📦 **最新版下载**：请前往 [GitHub Releases 页面](https://github.com/zys5807/AIReview/releases/latest) 下载 `AIReviewSystem-V1.008.1-清洁版.zip`
+- 📦 **最新版下载**：请前往 [GitHub Releases 页面](https://github.com/zys5807/AIReview/releases/latest) 下载 `AIReviewSystem-V1.008.1-clean.zip`（GitHub 资产名不支持中文，此即清洁版，不含任何个人数据）
 - 🚀 **快速开始**：解压后双击 `AIReviewSystem.exe` 即可运行，无需安装、无需配置环境，首次启动自动创建数据库（默认账号 `admin` / `admin123`，登录后可修改）
 - 🔑 **AI 功能**：右上角账号 →【API 设置】，填入模型服务商 Key（默认 DeepSeek）即可使用 AI 复盘
 
