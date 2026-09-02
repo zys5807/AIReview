@@ -258,7 +258,7 @@ def _save_ai_result(db, user_id, start, end, instrument_type, period_type, resul
     else:
         review = PhaseReview(
             user_id=user_id,
-            period_type=period_type if period_type in ("week", "month") else "custom",
+            period_type=period_type if period_type in ("week", "month", "quarter", "year") else "custom",
             start_date=start.date(),
             end_date=end.date(),
             instrument_type=instrument_type or "",

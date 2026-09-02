@@ -346,9 +346,9 @@ class AccountFlow(Base):
 
 
 class PhaseReview(Base):
-    """阶段复盘手写总结（V1.008）
+    """阶段复盘手写总结（V1.008.1）
 
-    period_type: week=周复盘 / month=月复盘 / custom=AI结果占位（非标准周月范围）
+    period_type: week=周复盘 / month=月复盘 / quarter=季度复盘 / year=年度复盘 / custom=AI结果占位
     start_date/end_date: 归一后的阶段起止日（周=周一~周日；月=1号~月末最后一日，均包含结束日）
     instrument_type: 绑定维度（决策2：只选品种，不考虑币种）''=全部/通用、A股/商品期货/数字货币
     唯一约束 (user_id, period_type, start_date, end_date, instrument_type)：同键一条，重复提交覆盖

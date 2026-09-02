@@ -20,7 +20,7 @@ class PeriodAiIn(BaseModel):
     end: datetime
     instrument_type: str | None = None
     currency: str = CNY  # V1.007.1 币种筛选（默认人民币）
-    period_type: str = "custom"  # V1.008 阶段粒度 week/month/custom（用于 AI 结果落库占位）
+    period_type: str = "custom"  # V1.008.1 阶段粒度 week/month/quarter/year/custom（用于 AI 结果落库占位）
 
 
 @router.get("/period")

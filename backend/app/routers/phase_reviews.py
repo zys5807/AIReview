@@ -1,4 +1,4 @@
-"""阶段复盘手写总结接口（V1.008：周/月粒度 × 品种维度，支持 txt/md/docx 导入）"""
+"""阶段复盘手写总结接口（V1.008.1：周/月/季/年粒度 × 品种维度，支持 txt/md/docx 导入）"""
 import io
 import json
 import zipfile
@@ -16,12 +16,12 @@ from ..routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/phase-reviews", tags=["阶段总结"])
 
-VALID_PERIOD_TYPES = {"week", "month", "custom"}
+VALID_PERIOD_TYPES = {"week", "month", "quarter", "year", "custom"}
 MAX_CONTENT_LEN = 50000
 
 
 class PhaseReviewIn(BaseModel):
-    period_type: str = "week"  # week / month / custom
+    period_type: str = "week"  # week / month / quarter / year / custom
     start: date
     end: date
     instrument_type: str = ""  # ''=全部/通用、A股/商品期货/数字货币（决策2：只选品种，不考虑币种）
@@ -53,7 +53,7 @@ def _serialize(r: PhaseReview) -> dict:
 
 def _validate(data: PhaseReviewIn) -> None:
     if data.period_type not in VALID_PERIOD_TYPES:
-        raise HTTPException(status_code=400, detail="period_type 仅支持 week/month/custom")
+        raise HTTPException(status_code=400, detail="period_type 仅支持 week/month/quarter/year/custom")
     if data.start > data.end:
         raise HTTPException(status_code=400, detail="开始日期不能晚于结束日期")
     if not data.content.strip():
