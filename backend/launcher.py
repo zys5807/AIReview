@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     ip = get_lan_ip()
     print("=" * 50)
-    print("  AIReviewSystem V1.0.7 - Starting...")
+    print("  AIReviewSystem V1.0.7.1 - Starting...")
     print("=" * 50)
     print()
     print("  On this PC:  http://localhost:8000")

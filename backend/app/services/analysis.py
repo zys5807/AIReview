@@ -172,12 +172,15 @@ def phase_summary(
     end,
     instrument_type: str | None = None,
     limit: int = 30,
+    currency: str = "CNY",
 ) -> dict:
     """对一段时间内该用户的所有交易做 AI 阶段性复盘分析。
 
     按【离场时间】筛选，与阶段复盘统计口径一致（未平仓交易不计入）。
+    V1.007.1：支持币种筛选（按交易盈亏归属币种过滤，数字货币→USD，A股/期货→CNY）。
     """
     from ..models import ReviewReport
+    from .account import TRADE_CURRENCY_MAP
 
     q = db.query(Trade).filter(
         Trade.user_id == user_id,
@@ -186,6 +189,14 @@ def phase_summary(
     )
     if instrument_type:
         q = q.filter(Trade.instrument_type == instrument_type)
+    # 币种筛选：与阶段复盘统计口径一致
+    if currency:
+        types = [t for t, c in TRADE_CURRENCY_MAP.items() if c == currency]
+        if instrument_type:
+            if TRADE_CURRENCY_MAP.get(instrument_type, "CNY") != currency:
+                q = q.filter(False)
+        elif types:
+            q = q.filter(Trade.instrument_type.in_(types))
     trades = q.order_by(Trade.exit_time.asc()).limit(limit).all()
     if not trades:
         raise AnalysisError("该时间段暂无交易记录")

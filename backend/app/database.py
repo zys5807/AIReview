@@ -57,6 +57,8 @@ _MIGRATIONS = [
     ("review_reports", "user_id", "INTEGER DEFAULT NULL"),
     # V1.006.3 账户流水币种（CNY 人民币 / USD 美元，USDT 1:1 并入 USD）
     ("account_flows", "currency", "VARCHAR(10) DEFAULT 'CNY'"),
+    # V1.007.1 账户流水品种类型维度（""=全部/通用、A股/商品期货/数字货币），分品种资金管理
+    ("account_flows", "instrument_type", "VARCHAR(20) DEFAULT ''"),
 ]
 
 # 迁移后把历史 NULL 统一补为空字符串

@@ -482,6 +482,7 @@ class AccountFlowCreate(BaseModel):
     flow_date: date  # 资金变动日期（可任意指定，补录历史）
     flow_type: Literal["initial", "deposit", "withdraw"] = "initial"
     currency: Currency = "CNY"  # 币种（默认人民币）
+    instrument_type: str = ""  # V1.007.1 品种类型：""=全部/通用 / A股 / 商品期货 / 数字货币
     amount: float = Field(..., gt=0, description="变动金额（正数）")
     note: str = ""
 
@@ -490,6 +491,7 @@ class AccountFlowUpdate(BaseModel):
     flow_date: date | None = None
     flow_type: Literal["initial", "deposit", "withdraw"] | None = None
     currency: Currency | None = None
+    instrument_type: str | None = None
     amount: float | None = Field(None, gt=0)
     note: str | None = None
 
@@ -501,6 +503,7 @@ class AccountFlowOut(BaseModel):
     flow_date: date
     flow_type: str
     currency: str = "CNY"
+    instrument_type: str = ""  # V1.007.1 品种类型
     amount: float
     balance_after: float | None = None
     note: str = ""

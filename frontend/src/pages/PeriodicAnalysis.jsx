@@ -35,6 +35,15 @@ import { getPeriodStats, getScoreTrend, periodAiAnalysis } from '../api'
 const { RangePicker } = DatePicker
 
 const INSTRUMENT_TYPES = ['A股', '商品期货', '数字货币']
+const CURRENCY_OPTIONS = [
+  { value: 'CNY', label: '人民币 ¥' },
+  { value: 'USD', label: '美元/USDT $' },
+]
+// V1.007.1 币种展示元数据
+const CUR_META = {
+  CNY: { symbol: '¥', label: '人民币' },
+  USD: { symbol: '$', label: '美元/USDT' },
+}
 
 // 预设时间段（返回 dayjs 数组）
 const PRESETS = [
@@ -64,6 +73,7 @@ function calcThreeMonth() {
 export default function PeriodicAnalysis() {
   const [range, setRange] = useState(() => calcMonth(0))
   const [instrumentType, setInstrumentType] = useState(undefined)
+  const [currency, setCurrency] = useState('CNY') // V1.007.1 币种筛选（必选，默认人民币）
   const [stats, setStats] = useState(null)
   const [scores, setScores] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -78,6 +88,7 @@ export default function PeriodicAnalysis() {
         // 用本地时间传参（toISOString 会转 UTC 减 8 小时，导致结束日期提前一天）
         start: dayjs(range[0]).startOf('day').format('YYYY-MM-DD HH:mm:ss'),
         end: dayjs(range[1]).endOf('day').format('YYYY-MM-DD HH:mm:ss'),
+        currency,
       }
       if (instrumentType) params.instrument_type = instrumentType
       const [s, sc] = await Promise.all([getPeriodStats(params), getScoreTrend(params)])
@@ -88,7 +99,7 @@ export default function PeriodicAnalysis() {
     } finally {
       setLoading(false)
     }
-  }, [range, instrumentType])
+  }, [range, instrumentType, currency])
 
   useEffect(() => {
     loadAll()
@@ -102,6 +113,7 @@ export default function PeriodicAnalysis() {
         start: dayjs(range[0]).startOf('day').format('YYYY-MM-DD HH:mm:ss'),
         end: dayjs(range[1]).endOf('day').format('YYYY-MM-DD HH:mm:ss'),
         instrument_type: instrumentType,
+        currency,
       })
       setAiResult(result)
       setAiOpen(true)
@@ -242,6 +254,13 @@ export default function PeriodicAnalysis() {
             onChange={setInstrumentType}
             options={INSTRUMENT_TYPES.map((t) => ({ value: t, label: t }))}
           />
+          {/* V1.007.1 币种筛选（必选，默认人民币）：所有指标按币种+业务种类交叉筛选 */}
+          <Select
+            style={{ width: 130 }}
+            value={currency}
+            onChange={setCurrency}
+            options={CURRENCY_OPTIONS}
+          />
           <Button icon={<ReloadOutlined />} onClick={loadAll} loading={loading} />
           <Button
             type="primary"
@@ -381,30 +400,25 @@ export default function PeriodicAnalysis() {
           >
             <div style={{ color: '#999', fontSize: 13, marginBottom: 4 }}>
               阶段期初资金
-              <Tooltip title="各币种阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏。CNY=人民币账户；USD=美元账户（USDT 1:1 并入）">
+              <Tooltip title={`所选币种（${CUR_META[currency]?.label ?? currency}）阶段首日交易开始前的账户权益：初始资金 + 出入金 + 此前全部已平仓交易盈亏；按所选业务种类匹配对应品种资金`}>
                 <QuestionCircleOutlined
                   style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
                 />
               </Tooltip>
             </div>
-            {metrics?.start_balances && Object.keys(metrics.start_balances).length > 0 ? (
+            {metrics?.start_balance != null ? (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px', fontSize: 14, lineHeight: '22px' }}>
-                {['CNY', 'USD'].map(
-                  (cur) =>
-                    metrics.start_balances[cur] != null && (
-                      <span key={cur}>
-                        <span style={{ color: '#999', marginRight: 6 }}>
-                          {cur === 'CNY' ? '人民币' : '美元/USDT'}：
-                        </span>
-                        <strong>
-                          {cur === 'CNY' ? '¥' : '$'}
-                          {metrics.start_balances[cur].toLocaleString('zh-CN', {
-                            maximumFractionDigits: 2,
-                          })}
-                        </strong>
-                      </span>
-                    )
-                )}
+                <span>
+                  <span style={{ color: '#999', marginRight: 6 }}>
+                    {CUR_META[currency]?.label ?? currency}：
+                  </span>
+                  <strong>
+                    {CUR_META[currency]?.symbol ?? ''}
+                    {metrics.start_balance.toLocaleString('zh-CN', {
+                      maximumFractionDigits: 2,
+                    })}
+                  </strong>
+                </span>
               </div>
             ) : (
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -426,30 +440,23 @@ export default function PeriodicAnalysis() {
           >
             <div style={{ color: '#999', fontSize: 13, marginBottom: 4 }}>
               阶段期末资金
-              <Tooltip title="各币种期初资金 + 该币种阶段交易盈亏（与阶段总收益率口径一致）">
+              <Tooltip title={`所选币种（${CUR_META[currency]?.label ?? currency}）期初资金 + 该币种阶段交易盈亏（与阶段总收益率口径一致）`}>
                 <QuestionCircleOutlined
                   style={{ marginLeft: 4, color: '#999', fontSize: 12 }}
                 />
               </Tooltip>
             </div>
-            {metrics?.end_balances && Object.keys(metrics.end_balances).length > 0 ? (
+            {metrics?.end_balance != null ? (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px', fontSize: 14, lineHeight: '22px' }}>
-                {['CNY', 'USD'].map((cur) => {
-                  const sb = metrics.start_balances?.[cur]
-                  const eb = metrics.end_balances[cur]
-                  if (eb == null || sb == null) return null
-                  return (
-                    <span key={cur}>
-                      <span style={{ color: '#999', marginRight: 6 }}>
-                        {cur === 'CNY' ? '人民币' : '美元/USDT'}：
-                      </span>
-                      <strong style={{ color: eb >= sb ? '#cf1322' : '#3f8600' }}>
-                        {cur === 'CNY' ? '¥' : '$'}
-                        {eb.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
-                      </strong>
-                    </span>
-                  )
-                })}
+                <span>
+                  <span style={{ color: '#999', marginRight: 6 }}>
+                    {CUR_META[currency]?.label ?? currency}：
+                  </span>
+                  <strong style={{ color: metrics.end_balance >= metrics.start_balance ? '#cf1322' : '#3f8600' }}>
+                    {CUR_META[currency]?.symbol ?? ''}
+                    {metrics.end_balance.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}
+                  </strong>
+                </span>
               </div>
             ) : (
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>

@@ -326,6 +326,9 @@ class AccountFlow(Base):
     balance_after 由系统按 (flow_date, id) 顺序自动重算，不允许手填。
     支持任意日期补录历史：初始资金是哪天由用户指定，中途可随时追加修正记录。
     currency: 币种 CNY(人民币)/USD(美元，USDT 1:1 并入)；各币种独立累计余额。
+    instrument_type: V1.007.1 品种类型维度 ""=全部/通用、A股/商品期货/数字货币；
+    资金按 (currency, instrument_type) 组合独立累计，实现分品种资金管理
+    （如 A股 50万CNY + 商品期货 30万CNY + 数字货币 5000USD）。
     """
 
     __tablename__ = "account_flows"
@@ -335,6 +338,7 @@ class AccountFlow(Base):
     flow_date: Mapped[date] = mapped_column(Date, nullable=False)  # 资金变动日期
     flow_type: Mapped[str] = mapped_column(String(20), default="initial")  # initial/deposit/withdraw
     currency: Mapped[str] = mapped_column(String(10), default="CNY")  # CNY/USD（USDT 并入 USD）
+    instrument_type: Mapped[str] = mapped_column(String(20), default="")  # V1.007.1 ""=全部/A股/商品期货/数字货币
     amount: Mapped[float] = mapped_column(Float, nullable=False)  # 变动金额（正数）
     balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)  # 该笔后账户总资金（自动重算）
     note: Mapped[str] = mapped_column(String(200), default="")  # 备注

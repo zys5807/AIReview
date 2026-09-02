@@ -9,6 +9,7 @@ from ..database import get_db
 from ..models import User
 from ..routers.auth import get_current_user
 from ..services import period_stats
+from ..services.account import CNY
 from ..services.analysis import AnalysisError, phase_summary
 
 router = APIRouter(prefix="/api/analysis", tags=["阶段复盘"])
@@ -18,6 +19,7 @@ class PeriodAiIn(BaseModel):
     start: datetime
     end: datetime
     instrument_type: str | None = None
+    currency: str = CNY  # V1.007.1 币种筛选（默认人民币）
 
 
 @router.get("/period")
@@ -27,13 +29,14 @@ def get_period_stats(
     start: datetime | None = Query(None, description="开始时间"),
     end: datetime | None = Query(None, description="结束时间"),
     instrument_type: str | None = Query(None, description="品种类型筛选"),
+    currency: str = Query(CNY, description="币种筛选（CNY/USD，默认 CNY）"),
 ):
-    """时间段统计：汇总 + 按日 + 按品种"""
+    """时间段统计：汇总 + 按日 + 按品种（按币种+业务种类交叉筛选）"""
     if not start:
         start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if not end:
         end = datetime.now()
-    return period_stats.period_stats(db, start, end, instrument_type, user.id)
+    return period_stats.period_stats(db, start, end, instrument_type, user.id, currency)
 
 
 @router.get("/scores")
@@ -43,13 +46,14 @@ def get_score_trend(
     start: datetime | None = Query(None, description="开始时间"),
     end: datetime | None = Query(None, description="结束时间"),
     instrument_type: str | None = Query(None, description="品种类型筛选"),
+    currency: str = Query(CNY, description="币种筛选（CNY/USD，默认 CNY）"),
 ):
-    """评分趋势 + 维度平均分 + 常见问题"""
+    """评分趋势 + 维度平均分 + 常见问题（按币种+业务种类交叉筛选）"""
     if not start:
         start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if not end:
         end = datetime.now()
-    return period_stats.score_trend(db, start, end, instrument_type, user.id)
+    return period_stats.score_trend(db, start, end, instrument_type, user.id, currency)
 
 
 @router.post("/period-ai")
@@ -58,8 +62,8 @@ def period_ai_analysis(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """对所选时间段内的所有交易做 AI 阶段性复盘分析"""
+    """对所选时间段内（按币种+业务种类筛选）的所有交易做 AI 阶段性复盘分析"""
     try:
-        return phase_summary(db, user.id, data.start, data.end, data.instrument_type)
+        return phase_summary(db, user.id, data.start, data.end, data.instrument_type, currency=data.currency)
     except AnalysisError as e:
         raise HTTPException(status_code=502, detail=str(e))

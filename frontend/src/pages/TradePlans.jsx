@@ -101,6 +101,13 @@ export default function TradePlans() {
     CNY: { symbol: '¥', label: '人民币' },
     USD: { symbol: '$', label: '美元/USDT' },
   }
+  // V1.007.1 品种类型资金管理：品种类型 → 对应币种
+  const INSTRUMENT_TYPES = ['A股', '商品期货', '数字货币']
+  const TYPE_META = {
+    'A股': { currency: 'CNY', color: 'blue' },
+    '商品期货': { currency: 'CNY', color: 'purple' },
+    '数字货币': { currency: 'USD', color: 'gold' },
+  }
   const tradeCurrency = (type) => (type === '数字货币' ? 'USD' : 'CNY')
   const fmtCur = (v, cur) =>
     v == null || isNaN(v)
@@ -140,7 +147,10 @@ export default function TradePlans() {
     })
       .then((r) => {
         const cur = tradeCurrency(fInstrType)
-        const balance = accountSummary?.balances?.[cur]
+        // V1.007.1 优先用该品种类型子账户资金，回退该币种合计
+        const balance =
+          accountSummary?.balances_by_type?.[fInstrType]?.[cur] ??
+          accountSummary?.balances?.[cur]
         setLivePosition({
           invested: r.invested_capital,
           matched: r.matched_name,
@@ -231,6 +241,7 @@ export default function TradePlans() {
         flow_date: dayjs(values.flow_date).format('YYYY-MM-DD'),
         flow_type: values.flow_type,
         currency: values.currency || 'CNY',
+        instrument_type: values.instrument_type || '',
         amount: values.amount,
         note: values.note || '',
       })
@@ -302,43 +313,42 @@ export default function TradePlans() {
     <Tag color={STATUS_META[p.status]?.color}>{STATUS_META[p.status]?.label}</Tag>
   )
 
-  // 总仓位（进行中计划合计占用 ÷ 对应币种当前资金）
+  // V1.007.1 总仓位（进行中计划合计占用 ÷ 对应品种类型当前资金）
   const pendingInvested = (plans || [])
     .filter((p) => p.status === 'pending' && p.planned_invested != null)
     .reduce((s, p) => s + p.planned_invested, 0)
-  const totalRatioByCur = {}
-  for (const cur of ['CNY', 'USD']) {
-    const bal = accountSummary?.balances?.[cur]
+  const totalRatioByType = {}
+  for (const itype of INSTRUMENT_TYPES) {
+    const cur = TYPE_META[itype].currency
+    const bal =
+      accountSummary?.balances_by_type?.[itype]?.[cur] ??
+      accountSummary?.balances?.[cur]
     const invested = (plans || [])
       .filter(
-        (p) =>
-          p.status === 'pending' &&
-          p.planned_invested != null &&
-          tradeCurrency(p.instrument_type) === cur
+        (p) => p.status === 'pending' && p.planned_invested != null && p.instrument_type === itype
       )
       .reduce((s, p) => s + p.planned_invested, 0)
-    totalRatioByCur[cur] = bal && invested ? (invested / bal) * 100 : null
+    totalRatioByType[itype] = bal && invested ? (invested / bal) * 100 : null
   }
   const fmtMoney = (v) =>
     v == null || isNaN(v) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {/* V1.006 账户资金卡片（按币种） */}
+      {/* V1.007.1 账户资金卡片（按品种类型分账管理） */}
       <Card size="small">
         <Space size={24} wrap align="center">
-          {['CNY', 'USD'].map((cur) => {
-            const bal = accountSummary?.balances?.[cur]
-            const init = accountSummary?.initial_amounts?.[cur]
-            const ratio = totalRatioByCur[cur]
+          {INSTRUMENT_TYPES.map((itype) => {
+            const cur = TYPE_META[itype].currency
+            const bal = accountSummary?.balances_by_type?.[itype]?.[cur]
+            const init = accountSummary?.initial_amounts_by_type?.[itype]?.[cur]
+            const ratio = totalRatioByType[itype]
             return (
-              <Space key={cur} size={8}>
+              <Space key={itype} size={8}>
                 <WalletOutlined style={{ fontSize: 18, color: '#534AB7' }} />
-                <Typography.Text type="secondary">
-                  {CURRENCY_META[cur].label}资金：
-                </Typography.Text>
+                <Typography.Text type="secondary">{itype}资金：</Typography.Text>
                 <Typography.Text strong style={{ fontSize: 16 }}>
-                  {fmtCur(bal, cur)}
+                  {fmtCur(bal ?? accountSummary?.balances?.[cur], cur)}
                 </Typography.Text>
                 <Typography.Text type="secondary">初始：</Typography.Text>
                 <Typography.Text>{fmtCur(init, cur)}</Typography.Text>
@@ -365,11 +375,12 @@ export default function TradePlans() {
             type="warning"
             showIcon
             style={{ marginTop: 8 }}
-            message="尚未设置初始资金：点右上角「管理资金」记录初始入金（可选人民币/美元/USDT）后，交易计划才能自动计算仓位比例"
+            message="尚未设置初始资金：点右上角「管理资金」按品种类型记录初始入金（如 A股 50万人民币 / 商品期货 30万人民币 / 数字货币 5000 USDT），交易计划即可按对应品种资金自动计算仓位比例"
           />
         ) : (
           <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-            美元/USDT 按 1:1 合并统计；数字货币持仓规模按 USDT 金额计入美元资金。
+            资金按品种类型分账管理：A股/商品期货→人民币，数字货币→美元/USDT（1:1 并入）；
+            未单独设置品种资金的品种自动回退该币种合计资金。
           </Typography.Text>
         )}
       </Card>
@@ -793,15 +804,15 @@ export default function TradePlans() {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="账户总资金按币种分别累计（人民币 / 美元），美元与 USDT 按 1:1 合并。初始资金日期可任意指定（如开始交易那天）；中途入金/出金追加记录即可，历史任意日期资金可精确回溯。"
+          message="资金按 币种×品种类型 分账管理（V1.007.1）：如 A股 50万人民币、商品期货 30万人民币、数字货币 5000 USDT。选「全部/通用」记录的历史资金自动回退共享。初始资金日期可任意指定，中途入金/出金追加记录即可。"
         />
         <Form form={flowForm} layout="inline" style={{ marginBottom: 12 }} onFinish={handleFlowSubmit}>
           <Form.Item name="flow_date" label="日期" rules={[{ required: true }]}>
-            <DatePicker style={{ width: 130 }} />
+            <DatePicker style={{ width: 120 }} />
           </Form.Item>
           <Form.Item name="flow_type" label="类型" rules={[{ required: true }]}>
             <Select
-              style={{ width: 110 }}
+              style={{ width: 100 }}
               options={[
                 { value: 'initial', label: '初始资金' },
                 { value: 'deposit', label: '入金' },
@@ -809,9 +820,21 @@ export default function TradePlans() {
               ]}
             />
           </Form.Item>
-          <Form.Item name="currency" label="币种" rules={[{ required: true }]}>
+          <Form.Item name="instrument_type" label="品种类型">
             <Select
               style={{ width: 110 }}
+              defaultValue=""
+              options={[
+                { value: '', label: '全部/通用' },
+                { value: 'A股', label: 'A股' },
+                { value: '商品期货', label: '商品期货' },
+                { value: '数字货币', label: '数字货币' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="currency" label="币种" rules={[{ required: true }]}>
+            <Select
+              style={{ width: 100 }}
               options={[
                 { value: 'CNY', label: '人民币 ¥' },
                 { value: 'USD', label: '美元/USDT $' },
@@ -819,10 +842,10 @@ export default function TradePlans() {
             />
           </Form.Item>
           <Form.Item name="amount" label="金额" rules={[{ required: true, message: '请输入金额' }]}>
-            <InputNumber style={{ width: 110 }} min={0.01} precision={2} />
+            <InputNumber style={{ width: 100 }} min={0.01} precision={2} />
           </Form.Item>
           <Form.Item name="note" label="备注">
-            <Input placeholder="可选" style={{ width: 110 }} />
+            <Input placeholder="可选" style={{ width: 100 }} />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={flowSaving}>
             添加
@@ -848,6 +871,13 @@ export default function TradePlans() {
                 <Tag color={f.currency === 'USD' ? 'gold' : 'blue'}>
                   {f.currency === 'USD' ? 'USD' : 'CNY'}
                 </Tag>
+                {f.instrument_type ? (
+                  <Tag color={TYPE_META[f.instrument_type]?.color ?? 'default'}>
+                    {f.instrument_type}
+                  </Tag>
+                ) : (
+                  <Tag>全部/通用</Tag>
+                )}
                 <Typography.Text>{f.flow_date}</Typography.Text>
                 <Typography.Text strong style={{ color: f.flow_type === 'withdraw' ? '#3f8600' : '#cf1322' }}>
                   {f.flow_type === 'withdraw' ? '-' : '+'}
