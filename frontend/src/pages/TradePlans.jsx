@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import dayjs from 'dayjs'
 import {
   Card,
@@ -33,6 +33,7 @@ import {
   CalendarOutlined,
   WalletOutlined,
   FundOutlined,
+  ClearOutlined,
 } from '@ant-design/icons'
 import {
   listTradePlans,
@@ -52,6 +53,7 @@ import {
   updateAccountFlow,
   deleteAccountFlow,
 } from '../api'
+import { useDraft } from '../utils/draft'
 
 const { TextArea } = Input
 
@@ -82,6 +84,10 @@ export default function TradePlans() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form] = Form.useForm()
+  // V1.008 计划弹窗草稿缓存：误关不丢输入
+  const [planFormData, setPlanFormData] = useState(null)
+  const [planDraftTip, setPlanDraftTip] = useState(false)
+  const [planDraftAt, setPlanDraftAt] = useState(null)
 
   const [reviewPlan, setReviewPlan] = useState(null) // AI 预评审结果
   const [reviewing, setReviewing] = useState(false)
@@ -192,11 +198,32 @@ export default function TradePlans() {
     fetchAccount()
   }, [])
 
+  // V1.008 草稿恢复：写回表单（plan_date 转 dayjs）
+  const restorePlanDraft = useCallback(
+    (d) => {
+      const v = d?.values
+      if (!v) return
+      form.setFieldsValue({ ...v, plan_date: v.plan_date ? dayjs(v.plan_date) : null })
+    },
+    [form]
+  )
+
+  // V1.008 计划弹窗草稿自动保存（输入防抖 400ms；key 不依赖 modalOpen，避免 setState 异步错 key）
+  const { checkDraft: checkPlanDraft, clear: clearPlanDraft } = useDraft(
+    `trade_plan:${editing?.id ?? 'new'}`,
+    { formData: planFormData, onDraft: restorePlanDraft }
+  )
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
     form.setFieldsValue({ direction: 'long', status: 'pending', plan_date: dayjs() })
     setModalOpen(true)
+    setPlanFormData(null) // 清残留，防止旧值自动写入新 key
+    // V1.008 恢复未保存草稿（新建场景）
+    const d = checkPlanDraft('trade_plan:new')
+    setPlanDraftTip(!!d?.values && Object.keys(d.values).length > 0)
+    setPlanDraftAt(d?.savedAt ? new Date(d.savedAt) : null)
   }
 
   const openEdit = (p) => {
@@ -207,7 +234,18 @@ export default function TradePlans() {
       status: p.status === 'executed' ? 'pending' : p.status,
     })
     setModalOpen(true)
+    setPlanFormData(null)
+    // V1.008 恢复未保存草稿（编辑场景，草稿优先于原始值）
+    const d = checkPlanDraft(`trade_plan:${p.id}`)
+    setPlanDraftTip(!!d?.values && Object.keys(d.values).length > 0)
+    setPlanDraftAt(d?.savedAt ? new Date(d.savedAt) : null)
   }
+
+  const handleDiscardPlanDraft = useCallback(() => {
+    clearPlanDraft()
+    setPlanDraftTip(false)
+    message.info('已清空草稿')
+  }, [clearPlanDraft])
 
   const handleSubmit = async () => {
     const values = await form.validateFields()
@@ -222,6 +260,8 @@ export default function TradePlans() {
       await createTradePlan(payload)
       message.success('交易计划已创建')
     }
+    clearPlanDraft() // V1.008 保存成功 → 清除草稿
+    setPlanDraftTip(false)
     setModalOpen(false)
     fetchData()
   }
@@ -616,7 +656,34 @@ export default function TradePlans() {
         cancelText="取消"
         width={720}
       >
-        <Form form={form} layout="vertical">
+        <Form form={form} layout="vertical" onValuesChange={(c, all) => setPlanFormData(all)}>
+          {planDraftTip && (
+            <Alert
+              type="warning"
+              showIcon
+              closable
+              onClose={() => setPlanDraftTip(false)}
+              style={{ marginBottom: 12 }}
+              message={
+                <Space wrap>
+                  已恢复未保存的草稿
+                  {planDraftAt && (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      （自动保存于 {dayjs(planDraftAt).format('HH:mm:ss')}）
+                    </Typography.Text>
+                  )}
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<ClearOutlined />}
+                    onClick={handleDiscardPlanDraft}
+                  >
+                    清空草稿
+                  </Button>
+                </Space>
+              }
+            />
+          )}
           <Row gutter={12}>
             <Col span={12}>
               <Form.Item

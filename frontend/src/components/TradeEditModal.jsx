@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import {
   Modal,
   Form,
@@ -14,12 +14,14 @@ import {
   message,
   Divider,
   Typography,
+  Alert,
 } from 'antd'
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { DeleteOutlined, PlusOutlined, ClearOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { listTradingSystems, updateTrade, calcTradeCapital } from '../api'
 import ScreenshotUploader from './ScreenshotUploader'
 import ActualPeriodSelector from './ActualPeriodSelector'
+import { useDraft } from '../utils/draft'
 
 /**
  * 编辑交易弹窗（支持修改字段 + 多张截图/角色管理）
@@ -32,6 +34,10 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
   const [saving, setSaving] = useState(false)
   // 自动计算的占用资金（用户手动改过后不再覆盖）
   const manualCapitalRef = useRef(false)
+  // V1.008 草稿缓存：误关弹窗不丢输入
+  const [autoFormData, setAutoFormData] = useState(null)
+  const [draftTip, setDraftTip] = useState(false)
+  const [draftSavedAt, setDraftSavedAt] = useState(null)
   // 品种识别结果（用于显式反馈：已识别/未识别）
   const [matchInfo, setMatchInfo] = useState(null)
   // 实时监听盈亏金额与占用资金，计算收益率（盈亏按净额：扣除手续费）
@@ -69,9 +75,35 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
       .catch(() => {})
   }
 
-  // 打开时预填表单 + 恢复截图
+  // V1.008 草稿恢复：把草稿值写回表单（日期字段需要重新转 dayjs）
+  const restoreDraft = useCallback(
+    (d) => {
+      const v = d?.values
+      if (!v) return
+      form.setFieldsValue({
+        ...v,
+        entry_time: v.entry_time ? dayjs(v.entry_time) : null,
+        exit_time: v.exit_time ? dayjs(v.exit_time) : null,
+        position_actions: (v.position_actions || []).map((a) => ({
+          ...a,
+          action_time: a.action_time ? dayjs(a.action_time) : null,
+        })),
+      })
+      if (v.invested_capital != null) manualCapitalRef.current = true
+    },
+    [form]
+  )
+
+  // V1.008 草稿自动保存（输入防抖 400ms）
+  const { checkDraft, clear: clearTradeDraft } = useDraft(
+    open && trade ? `trade_edit:${trade.id}` : null,
+    { formData: autoFormData, onDraft: restoreDraft }
+  )
+
+  // 打开时预填表单 + 恢复截图 + 检测未保存草稿
   useEffect(() => {
     if (open && trade) {
+      setAutoFormData(null) // 清残留，防止上次编辑的旧值自动写入当前 key
       manualCapitalRef.current = false
       form.setFieldsValue({
         ...trade,
@@ -90,8 +122,12 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
             ? [{ screenshot_id: trade.screenshot_id, role: '后续' }]
             : []
       setShotLinks(initial)
+      // V1.008 草稿恢复（用户上次误关未保存的编辑优先于原始值）
+      const d = checkDraft()
+      setDraftTip(!!d?.values && Object.keys(d.values).length > 0)
+      setDraftSavedAt(d?.savedAt ? new Date(d.savedAt) : null)
     }
-  }, [open, trade, form])
+  }, [open, trade, form, checkDraft])
 
   useEffect(() => {
     listTradingSystems()
@@ -124,6 +160,8 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
       }
       await updateTrade(trade.id, payload)
       message.success('交易已更新')
+      clearTradeDraft() // V1.008 保存成功 → 清除草稿
+      setDraftTip(false)
       onSuccess?.()
       onClose()
     } catch (e) {
@@ -132,6 +170,13 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
       setSaving(false)
     }
   }
+
+  // 用户主动放弃草稿
+  const handleDiscardTradeDraft = useCallback(() => {
+    clearTradeDraft()
+    setDraftTip(false)
+    message.info('已清空草稿')
+  }, [clearTradeDraft])
 
   return (
     <Modal
@@ -142,12 +187,40 @@ export default function TradeEditModal({ trade, open, onClose, onSuccess }) {
       footer={null}
       destroyOnClose
     >
+      {draftTip && (
+        <Alert
+          type="warning"
+          showIcon
+          closable
+          onClose={() => setDraftTip(false)}
+          style={{ marginBottom: 12 }}
+          message={
+            <Space wrap>
+              已恢复未保存的草稿
+              {draftSavedAt && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  （自动保存于 {dayjs(draftSavedAt).format('HH:mm:ss')}）
+                </Typography.Text>
+              )}
+              <Button
+                size="small"
+                type="link"
+                icon={<ClearOutlined />}
+                onClick={handleDiscardTradeDraft}
+              >
+                清空草稿
+              </Button>
+            </Space>
+          }
+        />
+      )}
       <Form
         form={form}
         layout="vertical"
         onFinish={handleSubmit}
         onValuesChange={(changed, all) => {
           if ('invested_capital' in changed) manualCapitalRef.current = true
+          setAutoFormData(all) // V1.008 草稿自动保存
           if (
             ['instrument_type', 'instrument_code', 'instrument_name', 'entry_price', 'volume'].some(
               (k) => k in changed,

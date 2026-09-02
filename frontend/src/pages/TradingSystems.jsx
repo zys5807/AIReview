@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import {
   Card,
   Button,
@@ -16,14 +16,22 @@ import {
   Row,
   Col,
   Divider,
+  Alert,
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, MinusCircleOutlined } from '@ant-design/icons'
+import {
+  PlusOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  MinusCircleOutlined,
+  ClearOutlined,
+} from '@ant-design/icons'
 import {
   listTradingSystems,
   createTradingSystem,
   updateTradingSystem,
   deleteTradingSystem,
 } from '../api'
+import { useDraft } from '../utils/draft'
 
 const { TextArea } = Input
 
@@ -48,6 +56,10 @@ export default function TradingSystems() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form] = Form.useForm()
+  // V1.008 弹窗草稿缓存：误关不丢输入
+  const [sysFormData, setSysFormData] = useState(null)
+  const [sysDraftTip, setSysDraftTip] = useState(false)
+  const [sysDraftAt, setSysDraftAt] = useState(null)
 
   const fetchData = async () => {
     try {
@@ -61,17 +73,46 @@ export default function TradingSystems() {
     fetchData()
   }, [])
 
+  // V1.008 草稿恢复 / 自动保存（Form.List 数组字段随表单整体保存）
+  const restoreSysDraft = useCallback(
+    (d) => {
+      const v = d?.values
+      if (!v) return
+      form.setFieldsValue(v)
+    },
+    [form]
+  )
+  const { checkDraft: checkSysDraft, clear: clearSysDraft } = useDraft(
+    `trading_system:${editing?.id ?? 'new'}`,
+    { formData: sysFormData, onDraft: restoreSysDraft }
+  )
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
     setModalOpen(true)
+    setSysFormData(null)
+    const d = checkSysDraft('trading_system:new')
+    setSysDraftTip(!!d?.values && Object.keys(d.values).length > 0)
+    setSysDraftAt(d?.savedAt ? new Date(d.savedAt) : null)
   }
 
   const openEdit = (item) => {
     setEditing(item)
     form.setFieldsValue(item)
     setModalOpen(true)
+    setSysFormData(null)
+    // 草稿优先于原始值
+    const d = checkSysDraft(`trading_system:${item.id}`)
+    setSysDraftTip(!!d?.values && Object.keys(d.values).length > 0)
+    setSysDraftAt(d?.savedAt ? new Date(d.savedAt) : null)
   }
+
+  const handleDiscardSysDraft = useCallback(() => {
+    clearSysDraft()
+    setSysDraftTip(false)
+    message.info('已清空草稿')
+  }, [clearSysDraft])
 
   const handleSubmit = async () => {
     const values = await form.validateFields()
@@ -82,6 +123,8 @@ export default function TradingSystems() {
       await createTradingSystem(values)
       message.success('交易系统已创建')
     }
+    clearSysDraft() // V1.008 保存成功 → 清除草稿
+    setSysDraftTip(false)
     setModalOpen(false)
     fetchData()
   }
@@ -200,7 +243,38 @@ export default function TradingSystems() {
         cancelText="取消"
         width={640}
       >
-        <Form form={form} layout="vertical">
+        <Form
+          form={form}
+          layout="vertical"
+          onValuesChange={(c, all) => setSysFormData(all)}
+        >
+          {sysDraftTip && (
+            <Alert
+              type="warning"
+              showIcon
+              closable
+              onClose={() => setSysDraftTip(false)}
+              style={{ marginBottom: 12 }}
+              message={
+                <Space wrap>
+                  已恢复未保存的草稿
+                  {sysDraftAt && (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      （自动保存于 {sysDraftAt.toLocaleTimeString('zh-CN', { hour12: false })}）
+                    </Typography.Text>
+                  )}
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<ClearOutlined />}
+                    onClick={handleDiscardSysDraft}
+                  >
+                    清空草稿
+                  </Button>
+                </Space>
+              }
+            />
+          )}
           <Form.Item
             name="name"
             label="系统名称"

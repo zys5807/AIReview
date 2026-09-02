@@ -10,6 +10,7 @@ import {
   KeyOutlined,
   ApiOutlined,
   CalendarOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
@@ -33,6 +34,8 @@ export default function MainLayout() {
     { key: '/plans', icon: <CalendarOutlined />, label: '交易计划' },
     { key: '/systems', icon: <SettingOutlined />, label: '交易系统' },
     { key: '/analysis', icon: <LineChartOutlined />, label: '阶段复盘' },
+    // V1.008 复盘总结独立模块（手写阶段总结 + 草稿缓存，AI 阶段分析自动参考）
+    { key: '/summaries', icon: <FileTextOutlined />, label: '复盘总结' },
     ...(user?.is_admin
       ? [{ key: '/users', icon: <TeamOutlined />, label: '用户管理' }]
       : []),
