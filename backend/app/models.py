@@ -1,7 +1,7 @@
 """数据库表结构定义"""
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -343,6 +343,39 @@ class AccountFlow(Base):
     balance_after: Mapped[float | None] = mapped_column(Float, nullable=True)  # 该笔后账户总资金（自动重算）
     note: Mapped[str] = mapped_column(String(200), default="")  # 备注
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PhaseReview(Base):
+    """阶段复盘手写总结（V1.008）
+
+    period_type: week=周复盘 / month=月复盘 / custom=AI结果占位（非标准周月范围）
+    start_date/end_date: 归一后的阶段起止日（周=周一~周日；月=1号~月末最后一日，均包含结束日）
+    instrument_type: 绑定维度（决策2：只选品种，不考虑币种）''=全部/通用、A股/商品期货/数字货币
+    唯一约束 (user_id, period_type, start_date, end_date, instrument_type)：同键一条，重复提交覆盖
+    ai_result: 最近一次 AI 阶段分析结果 JSON（决策4：AI 结果顺带保存）
+    """
+
+    __tablename__ = "phase_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "period_type", "start_date", "end_date", "instrument_type",
+            name="uq_phase_review_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, default=None, nullable=True, index=True)
+    period_type: Mapped[str] = mapped_column(String(10), default="week")  # week / month / custom
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String(20), default="")  # ''=全部/通用
+    title: Mapped[str] = mapped_column(String(100), default="")  # 标题（可选）
+    content: Mapped[str] = mapped_column(Text, default="")  # 手写总结正文（''=仅AI结果占位）
+    ai_result: Mapped[str] = mapped_column(Text, default="")  # 最近一次 AI 分析结果 JSON
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
 
 
 class FuturesConfig(Base):

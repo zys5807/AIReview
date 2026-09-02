@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import dayjs from 'dayjs'
 import {
   Card,
@@ -19,6 +19,10 @@ import {
   Divider,
   List,
   Tooltip,
+  Radio,
+  Input,
+  Popconfirm,
+  message,
 } from 'antd'
 import {
   CalendarOutlined,
@@ -28,9 +32,22 @@ import {
   BulbOutlined,
   WarningOutlined,
   QuestionCircleOutlined,
+  EditOutlined,
+  UploadOutlined,
+  HistoryOutlined,
+  SyncOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { getPeriodStats, getScoreTrend, periodAiAnalysis } from '../api'
+import {
+  getPeriodStats,
+  getScoreTrend,
+  periodAiAnalysis,
+  listPhaseReviews,
+  savePhaseReview,
+  updatePhaseReview,
+  deletePhaseReview,
+  parsePhaseReviewFile,
+} from '../api'
 
 const { RangePicker } = DatePicker
 
@@ -80,6 +97,21 @@ export default function PeriodicAnalysis() {
   const [aiResult, setAiResult] = useState(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  // V1.008 阶段总结（周/月粒度 × 品种维度）
+  const [periodMode, setPeriodMode] = useState('week') // week / month
+  const [periodDate, setPeriodDate] = useState(() => dayjs()) // 当前选中的周/月（周=任一周内日期；月=该月任一日期）
+  const [summaryType, setSummaryType] = useState('') // ''=全部/通用、A股/商品期货/数字货币
+  const [curReview, setCurReview] = useState(null)
+  const [allReviews, setAllReviews] = useState([])
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editTitle, setEditTitle] = useState('')
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [viewReview, setViewReview] = useState(null)
+  const fileInputRef = useRef(null)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -114,13 +146,129 @@ export default function PeriodicAnalysis() {
         end: dayjs(range[1]).endOf('day').format('YYYY-MM-DD HH:mm:ss'),
         instrument_type: instrumentType,
         currency,
+        period_type: periodMode, // V1.008 阶段粒度（AI 结果落库占位）
       })
       setAiResult(result)
       setAiOpen(true)
+      loadHistory()
     } catch (e) {
       /* 拦截器已提示 */
     } finally {
       setAiLoading(false)
+    }
+  }
+
+  // ===== V1.008 阶段总结：周/月粒度归一 + CRUD + 文件导入 =====
+  const normalizePeriod = useCallback((mode, v) => {
+    if (!v) return null
+    if (mode === 'week') {
+      // 周复盘：跨度为 周一 ~ 周日（dayjs.day() 0=周日，转 7）
+      const start = v.subtract((v.day() || 7) - 1, 'day')
+      return { start: start.format('YYYY-MM-DD'), end: start.add(6, 'day').format('YYYY-MM-DD') }
+    }
+    // 月复盘：1号 ~ 本月最后一日
+    return { start: v.startOf('month').format('YYYY-MM-DD'), end: v.endOf('month').format('YYYY-MM-DD') }
+  }, [])
+
+  const loadReview = useCallback(async () => {
+    if (!periodDate) {
+      setCurReview(null)
+      return
+    }
+    const p = normalizePeriod(periodMode, periodDate)
+    setReviewLoading(true)
+    try {
+      const params = { period_type: periodMode, start: p.start, end: p.end }
+      if (summaryType) params.instrument_type = summaryType
+      const list = await listPhaseReviews(params)
+      const hit = list.find((r) => r.instrument_type === (summaryType || '')) || null
+      setCurReview(hit)
+    } catch (e) {
+      /* 拦截器已提示 */
+    } finally {
+      setReviewLoading(false)
+    }
+  }, [periodMode, periodDate, summaryType, normalizePeriod])
+
+  const loadHistory = useCallback(async () => {
+    try {
+      setAllReviews(await listPhaseReviews({}))
+    } catch (e) {
+      /* 拦截器已提示 */
+    }
+  }, [])
+
+  useEffect(() => {
+    loadReview()
+    loadHistory()
+  }, [loadReview, loadHistory])
+
+  const openEdit = () => {
+    setEditTitle(curReview?.title || '')
+    setEditContent(curReview?.content || '')
+    setEditOpen(true)
+  }
+
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setImporting(true)
+    try {
+      const name = file.name.toLowerCase()
+      // .docx 由服务端零依赖解析；.txt/.md 前端直读
+      const text = name.endsWith('.docx') ? (await parsePhaseReviewFile(file)).text : await file.text()
+      setEditContent((c) => (c ? c + '\n\n' : '') + text.trim())
+      message.success('已导入文件内容')
+    } catch (err) {
+      /* 拦截器已提示 */
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleSaveReview = async () => {
+    const p = normalizePeriod(periodMode, periodDate)
+    if (!p) {
+      message.warning('请先选择周/月')
+      return
+    }
+    if (!editContent.trim()) {
+      message.warning('总结内容不能为空')
+      return
+    }
+    setSaving(true)
+    try {
+      const payload = {
+        period_type: periodMode,
+        start: p.start,
+        end: p.end,
+        instrument_type: summaryType || '',
+        title: editTitle,
+        content: editContent,
+      }
+      if (curReview) await updatePhaseReview(curReview.id, payload)
+      else await savePhaseReview(payload)
+      message.success('已保存')
+      setEditOpen(false)
+      loadReview()
+      loadHistory()
+    } catch (err) {
+      /* 拦截器已提示 */
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDeleteReview = async () => {
+    if (!curReview) return
+    try {
+      await deletePhaseReview(curReview.id)
+      message.success('已删除')
+      setCurReview(null)
+      loadHistory()
+    } catch (err) {
+      /* 拦截器已提示 */
     }
   }
 
@@ -271,6 +419,106 @@ export default function PeriodicAnalysis() {
             AI 阶段分析
           </Button>
         </Space>
+      </Card>
+
+      {/* V1.008 我的阶段总结（周/月粒度 × 品种维度，支持 txt/md/docx 导入，AI 分析自动参考） */}
+      <Card
+        size="small"
+        title={
+          <Space>
+            <EditOutlined style={{ color: '#534AB7' }} />
+            我的阶段总结
+            <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 'normal' }}>
+              周/月粒度 × 品种，AI 阶段分析自动参考并追踪连续性改进
+            </Typography.Text>
+          </Space>
+        }
+        extra={
+          <Button
+            size="small"
+            icon={<HistoryOutlined />}
+            onClick={() => setHistoryOpen(true)}
+          >
+            历史总结（{allReviews.length}）
+          </Button>
+        }
+      >
+        <Space wrap size={12}>
+          <Radio.Group value={periodMode} onChange={(e) => setPeriodMode(e.target.value)}>
+            <Radio.Button value="week">周复盘</Radio.Button>
+            <Radio.Button value="month">月复盘</Radio.Button>
+          </Radio.Group>
+          <DatePicker
+            picker={periodMode}
+            value={periodDate}
+            onChange={setPeriodDate}
+            allowClear
+            format={periodMode === 'week' ? 'YYYY-MM-DD' : 'YYYY-MM'}
+            placeholder={periodMode === 'week' ? '选择周（周一~周日）' : '选择月（1号~月末）'}
+          />
+          <Select
+            allowClear
+            placeholder="全部品种"
+            style={{ width: 130 }}
+            value={summaryType}
+            onChange={setSummaryType}
+            options={[
+              { value: '', label: '全部/通用' },
+              ...INSTRUMENT_TYPES.map((t) => ({ value: t, label: t })),
+            ]}
+          />
+          {curReview ? (
+            <>
+              <Button size="small" icon={<EditOutlined />} onClick={openEdit}>
+                编辑
+              </Button>
+              <Popconfirm title="删除该阶段总结？" onConfirm={handleDeleteReview}>
+                <Button size="small" danger>
+                  删除
+                </Button>
+              </Popconfirm>
+            </>
+          ) : (
+            <Button size="small" type="primary" disabled={!periodDate} onClick={openEdit}>
+              写总结
+            </Button>
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {curReview
+              ? `最后编辑 ${curReview.updated_at}`
+              : '选择周/月与品种后查看该阶段总结'}
+          </Typography.Text>
+        </Space>
+
+        <Spin spinning={reviewLoading}>
+          {curReview ? (
+            <div style={{ marginTop: 12 }}>
+              {curReview.title && (
+                <Typography.Text strong style={{ marginRight: 8 }}>
+                  {curReview.title}
+                </Typography.Text>
+              )}
+              {curReview.has_ai_result && <Tag color="blue">AI 已分析</Tag>}
+              <Typography.Paragraph
+                ellipsis={{ rows: 4, expandable: true, symbol: '展开' }}
+                style={{ marginBottom: 0, marginTop: 6 }}
+              >
+                {curReview.content ||
+                  (curReview.has_ai_result
+                    ? '（本阶段暂无手写内容，仅保存了 AI 分析结果）'
+                    : '')}
+              </Typography.Paragraph>
+            </div>
+          ) : (
+            periodDate && (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="本阶段还没有手写总结"
+                style={{ marginTop: 12 }}
+              />
+            )
+          )}
+        </Spin>
       </Card>
 
       {/* 统计卡片：两行布局（第一行 6 基础指标，第二行期初/期末资金；所有卡片统一高度 88px，内容垂直居中，保证标签大小一致） */}
@@ -715,6 +963,12 @@ export default function PeriodicAnalysis() {
               message={
                 <Space wrap>
                   本次分析：{aiResult.analyzed_count} 笔
+                  {aiResult.manual_review_count > 0 && (
+                    <Tag color="purple">
+                      📋 参考了 {aiResult.manual_review_count} 期手写总结
+                    </Tag>
+                  )}
+                  {aiResult.saved_to_review_id && <Tag color="green">AI 结果已保存</Tag>}
                   {aiResult.stats && (
                     <>
                       <Tag>胜率 {(aiResult.stats.win_rate * 100).toFixed(1)}%</Tag>
@@ -790,10 +1044,53 @@ export default function PeriodicAnalysis() {
               <Typography.Text type="secondary">暂无</Typography.Text>
             )}
 
+            {/* V1.008 连续性改进追踪 */}
+            {aiResult.continuity?.length > 0 && (
+              <>
+                <Divider orientation="left" plain>
+                  <SyncOutlined style={{ color: '#534AB7' }} /> 改进落实情况追踪
+                </Divider>
+                {aiResult.continuity.map((c, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 6,
+                      padding: '8px 12px',
+                      marginBottom: 8,
+                    }}
+                  >
+                    <Space wrap>
+                      <Typography.Text strong style={{ fontSize: 13 }}>
+                        {c.item}
+                      </Typography.Text>
+                      <Tag
+                        color={
+                          c.status === '已改进'
+                            ? 'green'
+                            : c.status === '部分改进'
+                              ? 'orange'
+                              : c.status === '未改进'
+                                ? 'red'
+                                : 'default'
+                        }
+                      >
+                        {c.status}
+                      </Tag>
+                    </Space>
+                    {c.evidence && (
+                      <div style={{ fontSize: 12, color: '#595959', marginTop: 4 }}>
+                        依据：{c.evidence}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+
             <Divider orientation="left" plain>
               <BulbOutlined style={{ color: '#1D9E75' }} /> 系统 / 策略优化建议
-            </Divider>
-            <List
+            </Divider>            <List
               size="small"
               dataSource={aiResult.system_feedback || []}
               renderItem={(item) => (
@@ -820,6 +1117,131 @@ export default function PeriodicAnalysis() {
               )}
               locale={{ emptyText: <Typography.Text type="secondary">暂无</Typography.Text> }}
             />
+          </div>
+        )}
+      </Modal>
+
+      {/* V1.008 写/编辑阶段总结 */}
+      <Modal
+        title={curReview ? '编辑阶段总结' : '写阶段总结'}
+        open={editOpen}
+        onCancel={() => setEditOpen(false)}
+        onOk={handleSaveReview}
+        confirmLoading={saving}
+        okText="保存"
+        width={720}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input
+            placeholder="标题（可选，如：第8周复盘）"
+            value={editTitle}
+            maxLength={100}
+            onChange={(e) => setEditTitle(e.target.value)}
+          />
+          <Input.TextArea
+            placeholder="手写本阶段复盘总结：执行情况、盈亏归因、纪律问题、下一期改进计划…"
+            value={editContent}
+            onChange={(e) => setEditContent(e.target.value)}
+            autoSize={{ minRows: 8, maxRows: 20 }}
+          />
+          <Space>
+            <Button
+              size="small"
+              icon={<UploadOutlined />}
+              loading={importing}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              导入文件（.txt/.md/.docx）
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Word 由服务端解析；导入内容追加到文本框，保存前可编辑
+            </Typography.Text>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.markdown,.docx"
+              style={{ display: 'none' }}
+              onChange={handleImportFile}
+            />
+          </Space>
+        </Space>
+      </Modal>
+
+      {/* V1.008 历史总结列表 */}
+      <Modal
+        title={`历史阶段总结（${allReviews.length}）`}
+        open={historyOpen}
+        onCancel={() => setHistoryOpen(false)}
+        footer={null}
+        width={760}
+      >
+        <List
+          size="small"
+          dataSource={allReviews}
+          locale={{ emptyText: '暂无总结，先写一篇吧' }}
+          renderItem={(r) => (
+            <List.Item
+              style={{ cursor: 'pointer' }}
+              onClick={() => setViewReview(r)}
+            >
+              <List.Item.Meta
+                title={
+                  <Space wrap>
+                    <Tag color={r.period_type === 'week' ? 'blue' : 'purple'}>
+                      {r.period_type === 'week' ? '周' : r.period_type === 'month' ? '月' : 'AI'}
+                    </Tag>
+                    <Typography.Text strong style={{ fontSize: 13 }}>
+                      {r.start} ~ {r.end}
+                    </Typography.Text>
+                    {r.instrument_type && <Tag color="geekblue">{r.instrument_type}</Tag>}
+                    {r.title && (
+                      <Typography.Text type="secondary">{r.title}</Typography.Text>
+                    )}
+                    {r.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
+                  </Space>
+                }
+                description={
+                  <Typography.Text type="secondary" ellipsis style={{ fontSize: 12 }}>
+                    {r.content || (r.has_ai_result ? '（仅 AI 分析结果）' : '（空）')}
+                  </Typography.Text>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Modal>
+
+      {/* V1.008 历史总结详情 */}
+      <Modal
+        title={viewReview?.title || '阶段总结'}
+        open={!!viewReview}
+        onCancel={() => setViewReview(null)}
+        footer={null}
+        width={720}
+      >
+        {viewReview && (
+          <div>
+            <Space wrap style={{ marginBottom: 12 }}>
+              <Tag color={viewReview.period_type === 'week' ? 'blue' : viewReview.period_type === 'month' ? 'purple' : 'cyan'}>
+                {viewReview.period_type === 'week' ? '周复盘' : viewReview.period_type === 'month' ? '月复盘' : 'AI 分析'}{' '}
+                {viewReview.start} ~ {viewReview.end}
+              </Tag>
+              {viewReview.instrument_type && <Tag color="geekblue">{viewReview.instrument_type}</Tag>}
+              {viewReview.has_ai_result && <Tag color="cyan">AI 结果</Tag>}
+            </Space>
+            <Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>
+              {viewReview.content || '（无手写内容）'}
+            </Typography.Paragraph>
+            {viewReview.has_ai_result && (
+              <>
+                <Divider orientation="left" plain>
+                  <SyncOutlined style={{ color: '#534AB7' }} /> AI 分析摘要
+                </Divider>
+                <Typography.Paragraph style={{ fontSize: 13, color: '#595959' }}>
+                  {viewReview.ai_summary || '（AI 分析结果已保存，可在该阶段重新分析查看）'}
+                </Typography.Paragraph>
+              </>
+            )}
           </div>
         )}
       </Modal>

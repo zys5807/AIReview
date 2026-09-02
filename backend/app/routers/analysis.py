@@ -20,6 +20,7 @@ class PeriodAiIn(BaseModel):
     end: datetime
     instrument_type: str | None = None
     currency: str = CNY  # V1.007.1 币种筛选（默认人民币）
+    period_type: str = "custom"  # V1.008 阶段粒度 week/month/custom（用于 AI 结果落库占位）
 
 
 @router.get("/period")
@@ -64,6 +65,14 @@ def period_ai_analysis(
 ):
     """对所选时间段内（按币种+业务种类筛选）的所有交易做 AI 阶段性复盘分析"""
     try:
-        return phase_summary(db, user.id, data.start, data.end, data.instrument_type, currency=data.currency)
+        return phase_summary(
+            db,
+            user.id,
+            data.start,
+            data.end,
+            data.instrument_type,
+            currency=data.currency,
+            period_type=data.period_type,
+        )
     except AnalysisError as e:
         raise HTTPException(status_code=502, detail=str(e))

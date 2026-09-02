@@ -18,6 +18,23 @@ export const changePassword = (old_password, new_password) =>
 export const periodAiAnalysis = (data) =>
   client.post('/api/analysis/period-ai', data).then((r) => r.data)
 
+// ---------- 阶段总结（V1.008：周/月粒度 × 品种维度，手写总结 + AI 连续性） ----------
+export const listPhaseReviews = (params = {}) =>
+  client.get('/api/phase-reviews', { params }).then((r) => r.data)
+export const listPhaseReviewHistory = (params = {}) =>
+  client.get('/api/phase-reviews/history', { params }).then((r) => r.data)
+export const savePhaseReview = (data) =>
+  client.post('/api/phase-reviews', data).then((r) => r.data)
+export const updatePhaseReview = (id, data) =>
+  client.put(`/api/phase-reviews/${id}`, data).then((r) => r.data)
+export const deletePhaseReview = (id) =>
+  client.delete(`/api/phase-reviews/${id}`).then((r) => r.data)
+export const parsePhaseReviewFile = (file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return client.post('/api/phase-reviews/parse-file', fd).then((r) => r.data)
+}
+
 // ---------- 交易计划 ----------
 export const listTradePlans = (params = {}) =>
   client.get('/api/trade-plans', { params }).then((r) => r.data)

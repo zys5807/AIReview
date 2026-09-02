@@ -103,12 +103,15 @@ PHASE_OUTPUT_FORMAT = """请严格按照以下 JSON 格式输出（不要输出�
   "patterns": ["交易者反复出现的行为/执行模式，如：追涨杀跌、入场犹豫、不设止损、提前止盈等"],
   "recurring_issues": [{"issue": "反复出现的问题", "count": 出现次数(数字), "suggestion": "针对该问题的具体改进方法"}],
   "system_feedback": ["对用户交易系统/策略本身的优化建议（如入场条件、止损止盈、周期选择、仓位规则等）"],
-  "next_actions": ["下一交易周期最值得执行的3条具体行动计划"]
+  "next_actions": ["下一交易周期最值得执行的3条具体行动计划"],
+  "continuity": [{"item": "上一期或更早总结中提出的改进点/问题", "status": "已改进|部分改进|未改进|无法判断", "evidence": "依据（本期统计数字或本期手写总结内容）"}]
 }"""
 
 
-def _build_phase_messages(trades, systems_text: str, stats: dict | None = None) -> list[dict]:
-    """构造阶段性分析的消息列表"""
+def _build_phase_messages(
+    trades, systems_text: str, stats: dict | None = None, manual: list | None = None
+) -> list[dict]:
+    """构造阶段性分析的消息列表；manual: 手写总结列表（V1.008，时间顺序，最后一条为本期）"""
     lines = [
         "你是专业的交易复盘分析师。请对用户在一段时间内的所有交易做一次【阶段性复盘分析】，",
         "找出整体表现、反复出现的问题、交易者行为模式，以及交易系统/策略本身可优化的方向。",
@@ -151,6 +154,27 @@ def _build_phase_messages(trades, systems_text: str, stats: dict | None = None) 
         if t.latest_issues:
             lines.append(f"  AI指出的问题：{t.latest_issues}")
 
+    if manual:
+        period_label = {"week": "周复盘", "month": "月复盘", "custom": "AI分析"}
+        lines += [
+            "",
+            "=== 用户手写阶段总结（时间顺序，最后一条为本期；AI 应尊重并引用用户自己的视角）===",
+        ]
+        for m in manual:
+            tag = f"{period_label.get(m['period_type'], m['period_type'])} · {m['instrument'] or '全部'}"
+            head = f"【{m['period']} · {tag}】"
+            if m.get("title"):
+                head += f" ({m['title']})"
+            lines.append(head)
+            lines.append(f"  本期总结：{m['content'][:300]}")
+        lines += [
+            "",
+            "要求：",
+            "1. 如果存在【上一期及更早】的总结，逐条对比其中提出的'问题/改进计划'与本期数据、本期总结，",
+            "   判断是否落实，输出到 continuity 字段（status 仅限：已改进/部分改进/未改进/无法判断）。",
+            "2. 手写总结与统计/交易明细冲突时，以统计为准，并在 summary 中说明差异。",
+        ]
+
     if systems_text:
         lines += ["", "=== 用户使用的交易系统规则 ===", systems_text]
 
@@ -165,6 +189,89 @@ def _build_phase_messages(trades, systems_text: str, stats: dict | None = None) 
     ]
 
 
+def _load_manual_reviews(db, user_id, start, end, instrument_type=None, limit_hist=3):
+    """V1.008：加载手写阶段总结 —— 本期（时间相交）+ 历史最近 3 期（end_date < start）。
+
+    返回时间升序列表（早→晚，最后一条为本期），每条含 id/period/period_type/instrument/title/content。
+    """
+    from ..models import PhaseReview
+
+    def _base_q():
+        q = db.query(PhaseReview).filter(PhaseReview.user_id == user_id)
+        if instrument_type:
+            q = q.filter(PhaseReview.instrument_type == instrument_type)
+        return q
+
+    # 本期：与筛选范围相交（start_date <= end 且 end_date >= start）
+    cur = _base_q().filter(
+        PhaseReview.start_date <= end.date(),
+        PhaseReview.end_date >= start.date(),
+    ).order_by(PhaseReview.end_date.desc()).all()
+    # 历史：end_date < start，倒序取最近 limit_hist 期
+    hist = _base_q().filter(PhaseReview.end_date < start.date()).order_by(
+        PhaseReview.end_date.desc(), PhaseReview.id.desc()
+    ).limit(limit_hist).all()
+
+    # 合并去重（按 id）：历史在前，本期在后；总数上限 5 条
+    merged = []
+    seen = set()
+    for r in list(reversed(hist)) + cur:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        merged.append(r)
+        if len(merged) >= 5:
+            break
+
+    return [
+        {
+            "id": r.id,
+            "period": f"{r.start_date.strftime('%m-%d')} ~ {r.end_date.strftime('%m-%d')}",
+            "period_type": r.period_type,
+            "instrument": r.instrument_type,
+            "title": r.title,
+            "content": r.content or "",
+        }
+        for r in merged
+    ]
+
+
+def _save_ai_result(db, user_id, start, end, instrument_type, period_type, result: dict) -> int | None:
+    """V1.008 决策4：AI 结果顺带保存 —— 命中本期匹配记录则更新 ai_result，否则创建占位记录。返回记录 id。"""
+    from ..models import PhaseReview
+
+    cur = (
+        db.query(PhaseReview)
+        .filter(
+            PhaseReview.user_id == user_id,
+            PhaseReview.start_date <= end.date(),
+            PhaseReview.end_date >= start.date(),
+        )
+        .order_by(PhaseReview.end_date.desc())
+    )
+    if instrument_type:
+        cur = cur.filter(PhaseReview.instrument_type == instrument_type)
+    review = cur.first()
+    payload = json.dumps(result, ensure_ascii=False)
+    if review:
+        review.ai_result = payload
+    else:
+        review = PhaseReview(
+            user_id=user_id,
+            period_type=period_type if period_type in ("week", "month") else "custom",
+            start_date=start.date(),
+            end_date=end.date(),
+            instrument_type=instrument_type or "",
+            title="AI 阶段分析",
+            content="",
+            ai_result=payload,
+        )
+        db.add(review)
+    db.commit()
+    db.refresh(review)
+    return review.id
+
+
 def phase_summary(
     db: Session,
     user_id: int,
@@ -173,11 +280,15 @@ def phase_summary(
     instrument_type: str | None = None,
     limit: int = 30,
     currency: str = "CNY",
+    include_manual: bool = True,
+    period_type: str = "custom",
 ) -> dict:
     """对一段时间内该用户的所有交易做 AI 阶段性复盘分析。
 
     按【离场时间】筛选，与阶段复盘统计口径一致（未平仓交易不计入）。
     V1.007.1：支持币种筛选（按交易盈亏归属币种过滤，数字货币→USD，A股/期货→CNY）。
+    V1.008：include_manual=True 时注入本期+历史最近3期手写阶段总结，输出 continuity 追踪，
+            并把 AI 结果保存到对应 phase_reviews 记录（决策4）。
     """
     from ..models import ReviewReport
     from .account import TRADE_CURRENCY_MAP
@@ -250,7 +361,12 @@ def phase_summary(
                 f"  策略「{st.name or '未命名'}」: 入场={st.entry_rule} 止损={st.stop_loss_rule} 止盈={st.take_profit_rule}"
             )
 
-    messages = _build_phase_messages(trades, "\n".join(systems_lines), stats)
+    # V1.008：加载手写阶段总结（本期 + 历史最近 3 期）
+    manual = []
+    if include_manual:
+        manual = _load_manual_reviews(db, user_id, start, end, instrument_type)
+
+    messages = _build_phase_messages(trades, "\n".join(systems_lines), stats, manual)
     try:
         raw = chat(messages, temperature=0.4, max_tokens=3000, db=db)
     except LLMError as e:
@@ -280,7 +396,26 @@ def phase_summary(
                 )
         return out
 
-    return {
+    def _continuity_list(v):
+        out = []
+        valid = {"已改进", "部分改进", "未改进", "无法判断"}
+        if not isinstance(v, list):
+            return out
+        for x in v:
+            if isinstance(x, dict) and x.get("item"):
+                status = str(x.get("status", "无法判断"))
+                if status not in valid:
+                    status = "无法判断"
+                out.append(
+                    {
+                        "item": str(x["item"])[:200],
+                        "status": status,
+                        "evidence": str(x.get("evidence", ""))[:300],
+                    }
+                )
+        return out
+
+    result = {
         "summary": str(data.get("summary", "")),
         "best_trades": _str_list(data.get("best_trades")),
         "worst_trades": _str_list(data.get("worst_trades")),
@@ -288,9 +423,20 @@ def phase_summary(
         "recurring_issues": _issue_list(data.get("recurring_issues")),
         "system_feedback": _str_list(data.get("system_feedback")),
         "next_actions": _str_list(data.get("next_actions")),
+        "continuity": _continuity_list(data.get("continuity")),
         "analyzed_count": len(trades),
         "stats": stats,
+        "manual_review_count": len(manual),
     }
+
+    # V1.008 决策4：AI 结果顺带保存（失败不阻断主流程）
+    try:
+        result["saved_to_review_id"] = _save_ai_result(
+            db, user_id, start, end, instrument_type, period_type, result
+        )
+    except Exception:
+        result["saved_to_review_id"] = None
+    return result
 
 
 # ---------- 交易计划 ----------
