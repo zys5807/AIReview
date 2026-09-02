@@ -343,8 +343,15 @@ export default function PeriodicAnalysis() {
             }}
           >
             <Statistic
-              title="盈亏比"
-              value={summary?.profit_factor ?? 0}
+              title={
+                <Space>
+                  盈亏比
+                  <Tooltip title="平均每笔盈利 ÷ 平均每笔亏损（亏损含平局；全赢单记 999；不依赖资金设置）">
+                    <QuestionCircleOutlined style={{ color: '#999', fontSize: 12 }} />
+                  </Tooltip>
+                </Space>
+              }
+              value={summary?.avg_pl_ratio ?? 0}
               precision={2}
             />
           </Card>
@@ -485,15 +492,6 @@ export default function PeriodicAnalysis() {
           <Col span={3}>
             <Card size="small">
               <Statistic
-                title="平均单笔盈亏比"
-                value={metrics?.avg_pl_ratio ?? '-'}
-                precision={2}
-              />
-            </Card>
-          </Col>
-          <Col span={3}>
-            <Card size="small">
-              <Statistic
                 title="日平均仓位"
                 value={metrics?.avg_daily_position_pct ?? '-'}
                 suffix={metrics?.avg_daily_position_pct != null ? '%' : ''}
@@ -570,7 +568,7 @@ export default function PeriodicAnalysis() {
               />
             </Card>
           </Col>
-          <Col span={3}>
+          <Col span={6}>
             <Card size="small">
               <Statistic
                 title="手续费汇总"

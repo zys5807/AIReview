@@ -37,6 +37,20 @@ def _pnl_by_currency(trades: list[Trade]) -> dict[str, float]:
     return {k: round(v, 2) for k, v in out.items()}
 
 
+def _avg_pl_ratio(wins: list[float], losses: list[float]) -> float | None:
+    """盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局；全赢单 999；无盈利单 0；全平局 None）
+
+    V1.007.2 起作为阶段复盘"盈亏比"的唯一口径，summary 与 metrics 共用，避免两处公式漂移。
+    """
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    if avg_loss > 0:
+        return round(avg_win / avg_loss, 3)
+    if avg_win > 0:
+        return 999.0  # 全赢单
+    return None
+
+
 def _calc_summary(trades: list[Trade]) -> dict:
     """基础统计：笔数/胜率/盈亏比/总盈亏等"""
     count = len(trades)
@@ -45,6 +59,7 @@ def _calc_summary(trades: list[Trade]) -> dict:
             "count": 0, "win": 0, "loss": 0, "win_rate": 0,
             "total_pnl": 0, "avg_pnl": 0,
             "gross_profit": 0, "gross_loss": 0, "profit_factor": None,
+            "avg_pl_ratio": None,  # V1.007.2 盈亏比（平均盈利单/平均亏损单），不依赖资金
             "total_volume": 0,
             "total_fee": 0,  # 手续费汇总（仅展示，不参与指标计算）
         }
@@ -65,6 +80,8 @@ def _calc_summary(trades: list[Trade]) -> dict:
         "profit_factor": round(gross_profit / gross_loss, 3)
         if gross_loss > 0
         else (None if gross_profit == 0 else 999.0),
+        # V1.007.2 盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局；全赢单 999；无盈利单 0；口径与 metrics.avg_pl_ratio 一致）
+        "avg_pl_ratio": _avg_pl_ratio(wins, losses),
         "total_volume": round(sum(t.volume or 0 for t in trades), 2),
         "total_fee": round(sum(t.fee or 0 for t in trades), 2),  # 手续费汇总（展示用，已计入净盈亏）
     }
@@ -131,18 +148,11 @@ def _calc_metrics(db, trades, start, end, user_id, currency: str = CNY, instrume
             "has_capital": has_capital,
         }
 
-    # ---- 1. 平均单笔盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致，均按净盈亏）
+    # ---- 1. 盈亏比 = 平均盈利单 / 平均亏损单（亏损含平局，与 _calc_summary 口径一致，均按净盈亏）
     pnls = [v for v in (_net_pnl(t) for t in trades) if v is not None]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
-    if avg_loss > 0:
-        avg_pl_ratio = round(avg_win / avg_loss, 3)
-    elif avg_win > 0:
-        avg_pl_ratio = 999.0  # 全赢单
-    else:
-        avg_pl_ratio = None
+    avg_pl_ratio = _avg_pl_ratio(wins, losses)
 
     # ---- 资金基准：期初资金（start 当日，所选币种）
     initial = start_balance
