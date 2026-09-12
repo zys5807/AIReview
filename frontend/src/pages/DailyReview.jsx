@@ -1323,19 +1323,30 @@ export default function DailyReview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date, loadByDate])
 
-  // 重新获取盘面数据（忽略缓存）
+  // 重新获取盘面数据：最近交易日强制联网重抓；历史日只能由「历史数据重建」刷新
+  // （实时接口无法按历史日期取涨跌家数与概念板块，强抓只会得到残缺快照）
   const handleFetch = async () => {
     setLoading(true)
     try {
       const res = await fetchDailySnapshot(dateStr, true)
-      setSnap(res.snapshot)
+      const s = res.snapshot || {}
+      setSnap(s)
       setSnapSource(res.source || '')
-      setNeedRebuild(!!res.snapshot?.need_rebuild)
-      message.success(
-        `已获取 ${dateStr} 盘面数据（${
-          res.source === 'cache' ? '本地缓存' : `联网 ${res.snapshot?.elapsed_sec ?? '-'}s`
-        }）`
-      )
+      setNeedRebuild(!!s.need_rebuild)
+      if (s.force_ignored) {
+        message.info(
+          `${dateStr} 为历史日期，已直接读取本地数据（重建口径）。` +
+            '历史日不支持重新抓取——实时接口取不到历史日的涨跌家数与概念板块，' +
+            '如需更新请用「历史数据重建」。',
+          6
+        )
+      } else {
+        message.success(
+          `已获取 ${dateStr} 盘面数据（${
+            res.source === 'cache' ? '本地缓存' : `联网 ${s.elapsed_sec ?? '-'}s`
+          }）`
+        )
+      }
     } catch (e) {
       /* 拦截器已提示 */
     } finally {
@@ -1634,6 +1645,13 @@ export default function DailyReview() {
         series: [line('最高连板', items.map((x) => x.max_lbc), '#722ed1')],
       },
     }
+  }, [trendData])
+
+  // 趋势数据来源统计：本地重建缓存 / 东财实时池回补
+  const trendSrc = useMemo(() => {
+    const its = trendData?.items || []
+    const em = its.filter((x) => x.source === 'em').length
+    return { total: its.length, em, cache: its.length - em }
   }, [trendData])
 
   const zt = snap?.limit_up || {}
@@ -2291,8 +2309,8 @@ export default function DailyReview() {
         footer={null}
         width={880}
       >
-        <Space style={{ marginBottom: 10 }}>
-          {[10, 20, 30].map((d) => (
+        <Space style={{ marginBottom: 10 }} wrap>
+          {[10, 20, 30, 60].map((d) => (
             <Button
               key={d}
               size="small"
@@ -2302,7 +2320,19 @@ export default function DailyReview() {
               近 {d} 日
             </Button>
           ))}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            本地重建缓存 {trendSrc.cache} 日
+            {trendSrc.em ? `｜东财实时池 ${trendSrc.em} 日` : ''}
+          </Text>
         </Space>
+        {trendData?.note && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 10 }}
+            message={trendData.note}
+          />
+        )}
         <Spin spinning={trendLoading}>
           {trendData?.items?.length ? (
             <>

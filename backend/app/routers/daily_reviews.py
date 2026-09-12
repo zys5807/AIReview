@@ -9,6 +9,7 @@ POST /rebuild 触发后台重建，GET /rebuild/status 轮询进度。
 """
 import datetime as _dt
 import json
+import traceback
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -174,12 +175,51 @@ def trend(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """多日情绪趋势（涨停/炸板/跌停家数、炸板率、连板高度），用于趋势图"""
+    """多日情绪趋势（涨停/炸板/跌停家数、炸板率、连板高度），用于趋势图
+
+    数据来源**本地重建缓存优先**：东财涨/炸/跌停池只能回溯约 15 个交易日，
+    只靠实时抓取的话趋势图最多 15 个点（这正是"重建之后仍然只有 15 日"的原因）。
+    因此先读本地快照缓存（重建写入），只用东财池回补「窗口内且缓存缺失」的日期。
+    """
     d = _parse_date(end)
     try:
-        return dm.collect_trend(d.isoformat(), days)
+        items, missing = dc.trend_from_cache(db, d.isoformat(), days)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"趋势数据抓取失败: {e}") from e
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"趋势数据读取失败: {e}") from e
+
+    filled = 0
+    if missing:
+        # 东财池回溯窗口约 15 个交易日，只对窗口内的缺失日发请求
+        try:
+            window = set(dm._recent_trade_days(d.isoformat(), min(15, max(days, 2))))
+        except Exception:  # noqa: BLE001
+            window = set()
+        todo = [x for x in missing if x in window]
+        if todo:
+            try:
+                fill = dm.collect_trend(d.isoformat(), min(max(days, 2), 60))
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                fill = {}
+            by = {x.get("date"): x for x in (fill.get("items") or [])}
+            for x in todo:
+                it = by.get(x)
+                # 超出回溯窗口的日期会返回全 0，属于"取不到"而非"当日为 0"，不可当数据用
+                if not it or not (it.get("limit_up") or it.get("broken") or it.get("limit_down")):
+                    continue
+                it["source"] = "em"
+                items.append(it)
+                filled += 1
+                missing.remove(x)
+
+    items.sort(key=lambda x: x.get("date") or "")
+    note = ""
+    if missing:
+        note = ("%d 个交易日暂无数据：既未被历史重建覆盖，又超出东财池约 15 日的回溯窗口。"
+                "执行「历史数据重建」即可补齐。" % len(missing))
+    return {"end": end, "days": len(items), "items": items,
+            "missing_dates": missing, "filled": filled, "note": note}
 
 
 # ---------------------------------------------------------------------------

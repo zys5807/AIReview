@@ -28,6 +28,11 @@ from . import daily_market as dm
 _MEMBER_TTL_DAYS = 7
 _HIST_KEY = "board_hist"
 
+# 快照数据质量等级（数值越大越可信）——见 cache_put 的说明。
+# 东财的涨停/炸板/跌停池回溯窗口只有约 15 个交易日，超出窗口的历史日一旦走
+# 「实时抓取」就只会得到 partial（涨跌家数 0、无概念板块），必须让它无法挤掉 rebuild。
+_KIND_RANK = {"partial": 1, "rebuild": 2, "live": 3}
+
 
 # ---------------------------------------------------------------------------
 # 基础
@@ -71,15 +76,23 @@ def cache_get(db: Session, date_str: str) -> dict | None:
 
 def cache_put(db: Session, date_str: str, snap: dict, kind: str = "live",
               force: bool = False) -> None:
-    """写入/更新某交易日快照
+    """写入/更新某交易日快照（按数据质量分级，低质量不得覆盖高质量）
 
-    实盘数据（live）优先级最高，不允许被回溯/部分数据覆盖（除非 force）。
+    质量等级 live(3) > rebuild(2) > partial(1)：
+      live    当日实时抓取（全市场快照在，字段最全）
+      rebuild 历史全市场日K重建（涨跌家数/成交额/概念/炸板齐全）
+      partial 历史日**尚未重建**时抓到的残缺快照（涨跌家数为 0、无概念板块）
+
+    为什么必须分级：partial 是「实时接口查不了历史日期」的必然降级产物，
+    它一旦覆盖 rebuild，用户辛苦重建的 60 天数据就没了（且要再花两分钟重建），
+    界面上表现为「重建完又点了一次抓取，数据全空」。
+    实盘日 live 同理不可被回溯/残缺数据挤掉（除非 force）。
     """
     payload = json.dumps(snap, ensure_ascii=False)
     r = (db.query(DailyMarketCache)
          .filter(DailyMarketCache.trade_date == _d(date_str)).first())
     if r:
-        if r.kind == "live" and kind != "live" and not force:
+        if not force and _KIND_RANK.get(kind, 0) < _KIND_RANK.get(r.kind or "", 0):
             return
         if r.kind == kind and r.snapshot_json == payload:
             return
@@ -449,6 +462,76 @@ def hot_concepts_map(db: Session) -> dict:
     return out
 
 
+def _trend_item(date_str: str, snap: dict, kind: str = "") -> dict:
+    """快照 → 趋势图的一个数据点
+
+    字段与 `daily_market.collect_trend` 的返回严格一一对应（前端直接消费），
+    炸板率/炸板金额率的分母都含炸板自身，与当日看板口径一致。
+    """
+    zt = snap.get("limit_up") or {}
+    zb = snap.get("broken") or {}
+    dtp = snap.get("limit_down") or {}
+    zt_c = int(zt.get("count") or 0)
+    zb_c = int(zb.get("count") or 0)
+    zt_a = float(zt.get("amount") or 0)
+    zb_a = float(zb.get("amount") or 0)
+    return {
+        "date": date_str,
+        "limit_up": zt_c,
+        "broken": zb_c,
+        "limit_down": int(dtp.get("count") or 0),
+        "zt_amount": zt_a,
+        "zb_amount": zb_a,
+        "broken_rate": round(zb_c / (zt_c + zb_c) * 100, 2) if (zt_c + zb_c) else None,
+        "broken_amount_rate": (round(zb_a / (zt_a + zb_a) * 100, 2) if (zt_a + zb_a) else None),
+        "max_lbc": int(zt.get("max_lbc") or 0),
+        "source": kind or "cache",
+    }
+
+
+def trend_from_cache(db: Session, end_str: str, days: int) -> tuple[list[dict], list[str]]:
+    """从本地快照缓存拼出「情绪趋势」序列 → (命中项, 缺失的交易日)
+
+    为什么要走缓存：东财涨/炸/跌停池的回溯窗口只有约 15 个交易日，逐日实时抓取时
+    趋势图最多只能画 15 个点（更早日期全空）——这正是「重建之后情绪分析仍只有 15 日」
+    的原因。重建已把每个交易日的涨停/炸板/跌停结构与连板高度写进 daily_market_cache，
+    这里直接复用：既能把趋势画满 N 日，又与当日看板同源同口径（不会出现"趋势图与
+    某日详情对不上"）。
+
+    缺失日期交调用方决定是否用东财池回补（见 routers/daily_reviews.trend）。
+    """
+    n = max(int(days), 1)
+    end = _d(end_str)
+    rows = (db.query(DailyMarketCache)
+            .filter(DailyMarketCache.trade_date <= end)
+            .order_by(DailyMarketCache.trade_date.desc())
+            .limit(n + 20).all())
+    items: list[dict] = []
+    have: set[str] = set()
+    for r in rows:
+        if len(items) >= n:
+            break
+        if not r.snapshot_json:
+            continue
+        try:
+            s = json.loads(r.snapshot_json)
+        except Exception:  # noqa: BLE001
+            continue
+        # 周末/节假日被查过留下的空壳不属于交易日，不能进趋势图（否则画出假的数据点）
+        if s.get("is_trade_day") is False:
+            continue
+        ds = r.trade_date.isoformat()
+        items.append(_trend_item(ds, s, r.kind or ""))
+        have.add(ds)
+    items.sort(key=lambda x: x["date"])
+    try:
+        want = dm._recent_trade_days(end_str, n)
+    except Exception:  # noqa: BLE001
+        want = [x["date"] for x in items]
+    missing = [d for d in want if d not in have]
+    return items, missing
+
+
 def _index_pct_map(date_str: str, back_days: int = 70) -> dict:
     """基准指数逐日涨跌幅 → {指数名: {日期: pct}}（严重异动偏离值用）"""
     try:
@@ -469,10 +552,21 @@ def get_snapshot(db: Session, date_str: str, force: bool = False) -> tuple[dict,
     返回 (snapshot, source)；source ∈ "cache" / "fresh"
     """
     is_latest = date_str == latest_trade_day()
-    if not force:
+    if not is_latest:
+        # 历史日：缓存优先是**无条件**的（force 也一样）。
+        # 实时接口按历史日期只能取到涨停/炸板/跌停池（且仅约 15 个交易日），
+        # 涨跌家数、两市成交额、概念板块一律取不到 —— 强行「重新抓取」只会得到一份
+        # partial 残缺快照。对历史日而言，「重建」才是唯一的刷新手段。
+        # 命中缓存时回带 force_ignored，前端据此提示用户改走重建而非重抓。
+        cached = cache_get(db, date_str)
+        if cached:
+            if force:
+                cached["force_ignored"] = True
+            return cached, "cache"
+    elif not force:
         cached = cache_get(db, date_str)
         # 最近交易日：只认实盘缓存，避免早上重建数据"锁死"当日
-        if cached and (cached.get("cache_kind") == "live" or not is_latest):
+        if cached and cached.get("cache_kind") == "live":
             return cached, "cache"
 
     # 个股日K（严重异动 / 昨日涨停表现回溯）+ 基准指数序列
