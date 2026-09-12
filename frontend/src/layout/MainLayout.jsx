@@ -11,6 +11,7 @@ import {
   ApiOutlined,
   CalendarOutlined,
   FileTextOutlined,
+  FundOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
@@ -36,6 +37,8 @@ export default function MainLayout() {
     { key: '/analysis', icon: <LineChartOutlined />, label: '阶段复盘' },
     // V1.008 复盘总结独立模块（手写阶段总结 + 草稿缓存，AI 阶段分析自动参考）
     { key: '/summaries', icon: <FileTextOutlined />, label: '复盘总结' },
+    // V1.009 A股每日复盘（自动抓取涨跌家数/涨停梯队/炸板率 + 手写复盘 + AI 点评）
+    { key: '/daily', icon: <FundOutlined />, label: 'A股每日复盘' },
     ...(user?.is_admin
       ? [{ key: '/users', icon: <TeamOutlined />, label: '用户管理' }]
       : []),
@@ -56,7 +59,7 @@ export default function MainLayout() {
             AIReviewSystem
           </Typography.Title>
           <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 4 }}>
-            V1.0.8.3 · {user?.is_admin ? '管理员' : '普通用户'}
+            V1.0.9.0 · {user?.is_admin ? '管理员' : '普通用户'}
           </div>
         </div>
         <Menu

@@ -194,6 +194,49 @@ export const getMarketReview = (id) =>
 export const deleteMarketReview = (id) =>
   client.delete(`/api/market-reviews/${id}`).then((r) => r.data)
 
+// ---------- A股每日复盘（V1.009 新模块 / V1.009.1 概念板块 + 历史缓存） ----------
+// 抓取盘面快照（缓存优先：命中本地缓存秒回，未命中才联网 3~10s）
+export const fetchDailySnapshot = (date, force = false) =>
+  client
+    .get('/api/daily-reviews/fetch', { params: { date, force }, timeout: 180000 })
+    .then((r) => r.data)
+export const listDailyReviews = (params = {}) =>
+  client.get('/api/daily-reviews', { params }).then((r) => r.data)
+export const getDailyReview = (id) =>
+  client.get(`/api/daily-reviews/${id}`).then((r) => r.data)
+export const getDailyReviewByDate = (date) =>
+  client.get(`/api/daily-reviews/by-date/${date}`).then((r) => r.data)
+export const saveDailyReview = (data) =>
+  client.post('/api/daily-reviews', data).then((r) => r.data)
+export const runDailyAi = (data) =>
+  client.post('/api/daily-reviews/ai', data, { timeout: 180000 }).then((r) => r.data)
+export const deleteDailyReview = (id) =>
+  client.delete(`/api/daily-reviews/${id}`).then((r) => r.data)
+export const getDailyTrend = (end, days = 20) =>
+  client
+    .get('/api/daily-reviews/trend', { params: { end, days }, timeout: 120000 })
+    .then((r) => r.data)
+// 概念板块实时排行（东财全量，约 504 个）
+export const getConceptBoards = (kind = 'concept') =>
+  client
+    .get('/api/daily-reviews/concept/boards', { params: { kind }, timeout: 90000 })
+    .then((r) => r.data)
+// 概念板块历史序列（来自本地重建数据）
+export const getConceptHistory = (code = '', days = 20) =>
+  client
+    .get('/api/daily-reviews/concept/history', { params: { code, days } })
+    .then((r) => r.data)
+// 历史数据重建（全市场个股日K回溯，后台任务）
+export const startDailyRebuild = (days = 60) =>
+  client
+    .post('/api/daily-reviews/rebuild', null, { params: { days }, timeout: 60000 })
+    .then((r) => r.data)
+export const getRebuildStatus = () =>
+  client.get('/api/daily-reviews/rebuild/status').then((r) => r.data)
+// 本地已缓存的交易日
+export const getCachedDates = () =>
+  client.get('/api/daily-reviews/cache/dates').then((r) => r.data)
+
 // ---------- 应用设置（API 配置，软件内管理） ----------
 export const getLlmSettings = () => client.get('/api/settings/llm').then((r) => r.data)
 

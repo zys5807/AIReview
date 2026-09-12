@@ -7,6 +7,7 @@ import TradeUpload from './pages/TradeUpload'
 import TradingSystems from './pages/TradingSystems'
 import PeriodicAnalysis from './pages/PeriodicAnalysis'
 import PeriodSummary from './pages/PeriodSummary'
+import DailyReview from './pages/DailyReview'
 import TradePlans from './pages/TradePlans'
 import Login from './pages/Login'
 import UserManage from './pages/UserManage'
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="systems" element={<TradingSystems />} />
             <Route path="analysis" element={<PeriodicAnalysis />} />
             <Route path="summaries" element={<PeriodSummary />} />
+            <Route path="daily" element={<DailyReview />} />
             <Route path="users" element={<UserManage />} />
             <Route path="futures" element={<FuturesConfig />} />
           </Route>

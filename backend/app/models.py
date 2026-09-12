@@ -437,3 +437,145 @@ class FuturesConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now
     )
+
+
+class DailyReview(Base):
+    """A股每日复盘（V1.009 新模块）
+
+    一个交易日一条记录，由三部分组成：
+    - market_json: 程序采集的盘面数据快照 JSON
+      （指数 / 涨跌家数分布 / 涨停池 + 连板梯队 / 炸板池 / 跌停池 / 昨日涨停今日表现 / 情绪指标）
+    - manual_content: 用户手写的复盘正文（可空）
+    - ai_result: AI 点评结果 JSON（{"content": markdown, "created_at": 时间}）
+
+    唯一约束 (user_id, trade_date)：同一交易日重复保存即覆盖更新。
+    说明：涨停/炸板/跌停池与连板梯队支持历史回溯（数据源按日期查询）；
+    全市场涨跌分布依赖实时快照，仅在当日抓取时完整，历史日期会标注 partial。
+    """
+
+    __tablename__ = "daily_reviews"
+    __table_args__ = (UniqueConstraint("user_id", "trade_date", name="uq_daily_review_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, default=None, nullable=True, index=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    market_json: Mapped[str] = mapped_column(Text, default="")  # 采集快照 JSON
+    manual_content: Mapped[str] = mapped_column(Text, default="")  # 手写复盘正文
+    ai_result: Mapped[str] = mapped_column(Text, default="")  # AI 点评结果 JSON
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class DailyMarketCache(Base):
+    """A股盘面数据本地缓存（V1.009.1 新增）
+
+    市场数据全局共享（不区分用户），按交易日唯一。
+
+    存在的意义：东财「实时快照」类接口（全市场涨跌家数分布、两市成交额、概念板块实时
+    排行）只能反映当下，无法按历史日期查询；涨停/炸板/跌停池的回溯窗口也只有约 15 个
+    交易日。因此把每个交易日的盘面数据落到本地：
+
+    - kind='live'    : 当日实盘抓取的完整快照（含上述快照类指标 + 概念板块情绪）
+    - kind='rebuild' : 由全市场个股日K回溯重建的历史数据（涨跌分布 / 成交额 / 板块指标）
+
+    查询历史日期时优先读缓存，未命中则尝试回溯重建并落库，历史逐步补齐。
+    """
+
+    __tablename__ = "daily_market_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="live")  # live / rebuild
+    snapshot_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class BoardMemberCache(Base):
+    """概念板块成分股映射缓存（V1.009.1 新增）
+
+    东财概念板块代码 → 成分股（代码/名称/总市值）。准静态数据（7 天过期）。
+
+    用途：东财板块指数只提供实时值，历史板块表现由成分股日K聚合重建，
+    因此需要一份"板块 → 成分股"的映射表。
+    """
+
+    __tablename__ = "board_member_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    board_code: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
+    board_name: Mapped[str] = mapped_column(String(80), default="")
+    members_json: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class MarketCacheMeta(Base):
+    """市场缓存元数据（V1.009.1 新增）
+
+    KV 形式，存放历史重建的辅助数据（如各概念板块近 N 日的涨跌幅/涨停家数序列，
+    用于概念板块情绪周期的阶段判定与主线持续性分析）。
+    """
+
+    __tablename__ = "market_cache_meta"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    value_json: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class StockKlineCache(Base):
+    """个股日K缓存（V1.009.1 新增）—— 历史重建的数据底座
+
+    按股票存最近若干交易日的 [日期, 收盘, 成交量]。作用：
+    1. 断点续传 —— 全市场约 5900 只逐一拉取必然有部分被数据源限流失败，
+       失败的个股缓存为空，下次重建自动重试补齐，不必从头再来；
+    2. 二次重建只补增量，秒级完成。
+    """
+
+    __tablename__ = "stock_kline_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(10), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(40), default="")
+    bars_json: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
+
+
+class StockHotRankCache(Base):
+    """个股历史人气排名缓存（V1.009.3 新增）—— 让「热度榜」可回溯的关键
+
+    数据源：东财人气榜的**个股视角**接口
+        POST https://emappdata.eastmoney.com/stockrank/getHisList
+        body {"srcSecurityCode": "SZ000636", ...} → [[calcTime, rank], ...]
+
+    与热榜「榜单视角」接口（getAllCurrentList，只给当前榜单）不同，这个接口按个股
+    返回**逐日全市场人气名次**（实测 120 天、日频、名次为全市场排序而非池内排序）。
+    于是只要对「可能上榜的候选股」各取一次序列，就能在本地组装出任意历史日的人气榜
+    —— 榜单视角无历史源的问题被绕过了。
+
+    实测：0.016 秒/只（8 并发），候选集约 2000~3000 只 → 约 35~50 秒一次性抓完，
+    之后任意历史日零网络。
+
+    存储：[["2026-05-16", 515], ...] 按日期升序，保留接口给的完整窗口（约 120 天）。
+    """
+
+    __tablename__ = "stock_hot_rank_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(10), nullable=False, unique=True, index=True)
+    series_json: Mapped[str] = mapped_column(Text, default="")
+    day_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now
+    )
