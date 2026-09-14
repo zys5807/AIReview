@@ -226,6 +226,11 @@ export const getConceptHistory = (code = '', days = 20) =>
   client
     .get('/api/daily-reviews/concept/history', { params: { code, days } })
     .then((r) => r.data)
+// 个股前复权日线 + EMA20（V1.009.4：点击股票名称弹窗查看）
+export const getStockKline = (code, days = 120) =>
+  client
+    .get('/api/daily-reviews/stock-kline', { params: { code, days }, timeout: 60000 })
+    .then((r) => r.data)
 // 历史数据重建（全市场个股日K回溯，后台任务）
 export const startDailyRebuild = (days = 60) =>
   client

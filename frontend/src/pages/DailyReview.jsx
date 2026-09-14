@@ -47,6 +47,7 @@ import {
   getDailyReviewByDate,
   getDailyTrend,
   getRebuildStatus,
+  getStockKline,
   listDailyReviews,
   runDailyAi,
   saveDailyReview,
@@ -92,6 +93,44 @@ const TXT_L3 = {
 const TXT_L3_DIM = { ...TXT_L3, color: '#8c8c8c' }
 
 // ---------------------------------------------------------------------------
+// 可点击的股票名称（V1.009.4）
+// 点一下弹出该股日线图（含 EMA20）。样式统一为「蓝色 + 虚线下划线」，
+// 让它和纯文本区分开 —— 否则用户不知道哪些名字能点。
+// 通过 onOpen 回调显式传入，不做 Context 透传：需要接入的组件只有 5 个，
+// 显式传参更好定位（哪张表点了会弹，看 JSX 就知道）。
+// ---------------------------------------------------------------------------
+function StockName({ code, name, onOpen, strong, fontSize = 14 }) {
+  const label = name || code || '-'
+  if (!code || !onOpen) {
+    return (
+      <Text strong={strong} style={{ fontSize }}>
+        {label}
+      </Text>
+    )
+  }
+  return (
+    <a
+      onClick={(ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        onOpen(code, name)
+      }}
+      title={`查看 ${label} 的日线图（含 EMA20）`}
+      style={{
+        fontSize,
+        fontWeight: strong ? 600 : 400,
+        color: '#1677ff',
+        textDecoration: 'none',
+        borderBottom: '1px dashed rgba(22,119,255,.5)',
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </a>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // 指标口径备注（V1.009.2）
 // 每个情绪/结构类指标旁的「?」悬停显示：定义 → 公式与口径 → 数据源。
 // 文案与后端实现严格对应（backend/app/services/daily_market.py），改口径时必须同步改这里，
@@ -115,7 +154,7 @@ const BIN_TIP = (label, rule) => ({
 const TIP = {
   limit_up: {
     t: '涨停家数（已剔除 ST/*ST）',
-    d: '收盘价等于涨停价的个股家数。主口径已剔除 ST、*ST，与东财「涨停板行情」页的涨跌停对比一致；斜杠后为含 ST 口径 —— 东财首页 / APP 显示的是后者，通常比主口径多 1~3 家。',
+    d: '收盘价等于涨停价的个股家数，已剔除 ST、*ST —— 与东财「涨停板行情」页的涨跌停对比一致。',
     f: [
       '涨停价 = 涨跌停基数 × (1 + 涨跌幅限制)，取整到分',
       '基数取交易所「除权参考价」，不是前复权前收（除权日两者不同）',
@@ -128,7 +167,7 @@ const TIP = {
   },
   limit_down: {
     t: '跌停家数（已剔除 ST/*ST）',
-    d: '收盘价等于跌停价的个股家数。主口径已剔除 ST、*ST；斜杠后为含 ST 口径。',
+    d: '收盘价等于跌停价的个股家数，已剔除 ST、*ST。',
     f: [
       '跌停价 = 涨跌停基数 × (1 − 涨跌幅限制)，取整到分',
       '北交所跌停向上取整（与涨停同向不越界）',
@@ -148,12 +187,12 @@ const TIP = {
   },
   broken: {
     t: '炸板家数（已剔除 ST/*ST）',
-    d: '当日曾触及涨停价、但收盘未封住涨停的个股家数。主口径已剔除 ST、*ST；斜杠后为含 ST 口径。',
+    d: '当日曾触及涨停价、但收盘未封住涨停的个股家数，已剔除 ST、*ST。',
     f: [
       '历史日口径（日K）：当日最高价 ≥ 涨停价 且 收盘价 < 涨停价',
       '最近交易日口径（东财炸板池）：盘中真的封过板、收盘未封住；不收录 ST',
       '两口径实测差异：日K无分时数据，无法区分「封后开板」与「瞬时摸板」，必然略多计',
-      '两条路径均已按「剔 ST」输出，含 ST 家数由全市场快照另行核算',
+      '两条路径均已按「剔 ST」输出，口径一致；含 ST 的家数不在本系统任何指标里出现',
     ],
     s: '最近约 15 个交易日走东财炸板池（不收录 ST/*ST）；更早由个股日K聚合后按同一口径剔除 ST',
   },
@@ -199,7 +238,7 @@ const TIP = {
     f: [
       '衡量「接力效应」：正值说明昨日封板资金今日仍能获利，情绪延续；负值说明炸板亏钱、情绪转弱',
       '取不到当日价格的（停牌等）不参与均值，括号内为有效家数',
-      '昨日涨停名单与上方「涨停（剔ST）」严格同源：实时池与历史日K重建两条路径都按「剔 ST」输出，因此括号内的只数必然等于前一交易日的涨停家数',
+      '昨日涨停名单与上方「涨停」严格同源：实时池与历史日K重建两条路径都按「剔 ST」输出，因此括号内的只数必然等于前一交易日的涨停家数',
       '「再涨停」按同一口径统计，即当日剔 ST 后仍封涨停的家数',
     ],
     s: '历史日由日K聚合回溯并按同一口径剔除 ST；最近交易日优先用实时全市场快照',
@@ -356,7 +395,7 @@ const TIP = {
       '升降标记按指标语义着色：涨停、首板、连板、昨涨停股表现、上涨占比「升高为红（情绪转好）」；跌停、炸板、炸板率「升高为绿（情绪转差）」',
       '折线在中间断开表示该交易日取不到数据（例如尚未做历史数据重建），不是数值为 0',
       '数据点随所选日期变化：以页面当前所选交易日为终点向前取 N 个交易日',
-      '涨停 / 跌停 / 炸板三个家数，以及「昨涨停股表现」的样本名单，均已剔除 ST、*ST，与当日看板、东财「涨停板行情」页口径一致',
+      '涨停 / 跌停 / 炸板三个家数，以及「首板 / 连板 / 昨涨停股表现」的样本名单，均已剔除 ST、*ST，与当日看板、东财「涨停板行情」页口径一致',
     ],
     s: '本地每日快照缓存（历史重建写入，可覆盖约 60 个交易日）；缓存缺失且在回溯窗口内时用东财实时池回补',
   },
@@ -539,11 +578,29 @@ const ROLE_META = [
 ]
 
 /** 单只角色股：标签 + 悬停显示判定依据 */
-function RoleStock({ x, color }) {
+function RoleStock({ x, color, onOpenStock }) {
   return (
     <Tooltip title={<div style={{ fontSize: 12, lineHeight: 1.7 }}>{x.reason || '—'}</div>}>
       <Tag color={color} style={{ fontSize: 11, marginInlineEnd: 0, cursor: 'help' }}>
-        {x.name}
+        {onOpenStock ? (
+          <a
+            onClick={(ev) => {
+              ev.preventDefault()
+              ev.stopPropagation()
+              onOpenStock(x.code, x.name)
+            }}
+            title={`查看 ${x.name} 的日线图（含 EMA20）`}
+            style={{
+              color: '#fff',
+              textDecoration: 'none',
+              borderBottom: '1px dashed rgba(255,255,255,.65)',
+            }}
+          >
+            {x.name}
+          </a>
+        ) : (
+          x.name
+        )}
         <span style={{ marginLeft: 4, fontVariantNumeric: 'tabular-nums' }}>
           {x.pct > 0 ? '+' : ''}
           {Number(x.pct).toFixed(2)}%
@@ -555,7 +612,7 @@ function RoleStock({ x, color }) {
 }
 
 /** 板块展开行：四类角色（数据由后端 roles 字段提供，缺则整行不可展开） */
-function RolePanel({ roles }) {
+function RolePanel({ roles, onOpenStock }) {
   if (!roles) return null
   if (!ROLE_META.some((m) => (roles[m.key] || []).length)) {
     return (
@@ -584,7 +641,7 @@ function RolePanel({ roles }) {
             </span>
             <Space size={[4, 4]} wrap style={{ flex: 1 }}>
               {arr.map((x) => (
-                <RoleStock key={x.code} x={x} color={m.color} />
+                <RoleStock key={x.code} x={x} color={m.color} onOpenStock={onOpenStock} />
               ))}
             </Space>
           </div>
@@ -842,7 +899,7 @@ function MiniTrendGrid({ data, loading, mainLines, days = 10 }) {
 }
 
 /** 概念板块情绪周期（V1.009.1）：板块全景 + 主线题材周期阶段 + 涨停贡献榜 + 涨跌幅榜 */
-function ConceptEmotion({ concept }) {
+function ConceptEmotion({ concept, onOpenStock }) {
   const c = concept || {}
   if (!c.available) {
     return (
@@ -953,7 +1010,7 @@ function ConceptEmotion({ concept }) {
         pagination={false}
         dataSource={c.main_lines || []}
         expandable={{
-          expandedRowRender: (r) => <RolePanel roles={r.roles} />,
+          expandedRowRender: (r) => <RolePanel roles={r.roles} onOpenStock={onOpenStock} />,
           rowExpandable: (r) =>
             !!r.roles &&
             ['leader', 'main_force', 'follower', 'catchup'].some(
@@ -1109,7 +1166,7 @@ function ConceptEmotion({ concept }) {
 }
 
 /** 严重异动提醒（V1.009.2）：偏离值口径的异常波动 / 严重异常波动 / 连板风险 */
-function AbnormalWatch({ abnormal }) {
+function AbnormalWatch({ abnormal, onOpenStock }) {
   const a = abnormal || {}
   if (!a.available) {
     // ok=True 表示检测已成功执行、只是当日没有满足条件的标的 —— 与「数据缺失」必须区分开
@@ -1141,7 +1198,7 @@ function AbnormalWatch({ abnormal }) {
       width: 132,
       render: (v, r) => (
         <Space size={4}>
-          <Text strong style={{ fontSize: 12 }}>{v || r.code}</Text>
+          <StockName code={r.code} name={v} onOpen={onOpenStock} strong fontSize={12} />
           <Text type="secondary" style={{ fontSize: 11 }}>{r.code}</Text>
         </Space>
       ),
@@ -1210,7 +1267,7 @@ function AbnormalWatch({ abnormal }) {
 }
 
 /** 游资动向（V1.009.2）：龙虎榜席位聚合 + 知名游资识别 */
-function YouziFlow({ youzi }) {
+function YouziFlow({ youzi, onOpenStock }) {
   const y = youzi || {}
   if (!y.available) {
     return (
@@ -1224,7 +1281,7 @@ function YouziFlow({ youzi }) {
     <Space size={[4, 4]} wrap>
       {(stocks || []).slice(0, max).map((s) => (
         <Tag key={s.code} style={{ fontSize: 11, marginInlineEnd: 0 }}>
-          {s.name || s.code}
+          <StockName code={s.code} name={s.name} onOpen={onOpenStock} fontSize={11} />
           <Text style={{ color: pctColor(s.pct), marginLeft: 3, fontSize: 11 }}>
             {s.pct == null ? '' : `${s.pct > 0 ? '+' : ''}${Number(s.pct).toFixed(1)}%`}
           </Text>
@@ -1335,7 +1392,7 @@ function YouziFlow({ youzi }) {
 }
 
 /** 股票热度榜（V1.009.2）：同花顺热榜 + 东财人气榜 */
-function HotList({ hot }) {
+function HotList({ hot, onOpenStock }) {
   const h = hot || {}
   // 历史日热度榜由「东财人气榜个股逐日排名」回溯组装：名次与排名变化是真实历史数据，
   // 但同花顺的「热度值」「上榜原因」只在实时榜里有（任何历史源都不提供），故隐藏这两列。
@@ -1388,7 +1445,7 @@ function HotList({ hot }) {
             width: 132,
             render: (v, r) => (
               <Space size={4}>
-                <Text strong style={{ fontSize: 12 }}>{v || '-'}</Text>
+                <StockName code={r.code} name={v} onOpen={onOpenStock} strong fontSize={12} />
                 <Text type="secondary" style={{ fontSize: 11 }}>{r.code}</Text>
               </Space>
             ),
@@ -1485,6 +1542,164 @@ function HotList({ hot }) {
   )
 }
 
+const fmt2 = (v) => (v == null || Number.isNaN(Number(v)) ? '-' : Number(v).toFixed(2))
+
+// ---------------------------------------------------------------------------
+// 个股日线弹窗（V1.009.4）：日线 K + EMA20
+// 数据来自后端 /api/daily-reviews/stock-kline（腾讯 / 新浪日K直连，前复权）。
+// 颜色遵循 A 股习惯：红 = 阳线（收 ≥ 开），绿 = 阴线。
+// ---------------------------------------------------------------------------
+function StockKlineModal({ open, code, name, days, loading, data, onDays, onClose }) {
+  const d = data || {}
+  const n = (d.dates || []).length
+  // 默认只展示最近约 130 根，更早的靠 dataZoom 拖回来（一次画 500 根 K 线会挤成一团）
+  const zoomStart = n > 130 ? Math.round((1 - 130 / n) * 100) : 0
+
+  const option = useMemo(() => {
+    if (!d.available) return null
+    const kl = d.klines || []
+    const closes = d.closes || []
+    const ema20 = d.ema20 || []
+    const dates = d.dates || []
+    return {
+      animation: false,
+      grid: { left: 66, right: 20, top: 36, bottom: 58 },
+      legend: {
+        data: ['日K', 'EMA20'],
+        right: 10,
+        top: 2,
+        itemWidth: 14,
+        itemHeight: 8,
+        textStyle: { fontSize: 11 },
+      },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross', label: { fontSize: 11 } },
+        formatter: (ps) => {
+          if (!ps || !ps.length) return ''
+          const i = ps[0].dataIndex
+          const k = kl[i] || []
+          const prev = i > 0 ? closes[i - 1] : null
+          const pct = prev ? (closes[i] / prev - 1) * 100 : null
+          const cc = (v) => (v == null ? '#8c8c8c' : v >= 0 ? RED : GREEN)
+          return [
+            `<b>${dates[i] || ''}</b>`,
+            `开 ${fmt2(k[0])}　高 ${fmt2(k[3])}`,
+            `低 ${fmt2(k[2])}　收 <b>${fmt2(k[1])}</b>`,
+            pct == null
+              ? '涨跌幅 -'
+              : `涨跌幅 <span style="color:${cc(pct)}">${pct > 0 ? '+' : ''}${pct.toFixed(2)}%</span>`,
+            `EMA20 ${fmt2(ema20[i])}`,
+          ].join('<br/>')
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        boundaryGap: true,
+        axisLine: { lineStyle: { color: '#d9d9d9' } },
+        axisLabel: { fontSize: 11, hideOverlap: true },
+      },
+      yAxis: {
+        scale: true,
+        splitLine: { lineStyle: { color: '#f0f0f0' } },
+        axisLabel: { fontSize: 11, formatter: (v) => Number(v).toFixed(2) },
+      },
+      dataZoom: [
+        { type: 'inside', start: zoomStart, end: 100 },
+        { type: 'slider', height: 16, bottom: 16, start: zoomStart, end: 100, showDetail: false },
+      ],
+      series: [
+        {
+          name: '日K',
+          type: 'candlestick',
+          data: kl,
+          itemStyle: { color: RED, color0: GREEN, borderColor: RED, borderColor0: GREEN },
+        },
+        {
+          name: 'EMA20',
+          type: 'line',
+          data: ema20,
+          smooth: true,
+          symbol: 'none',
+          lineStyle: { width: 1.8, color: '#fa8c16' },
+          itemStyle: { color: '#fa8c16' },
+          connectNulls: false,
+          z: 3,
+        },
+      ],
+    }
+  }, [d, zoomStart])
+
+  const L = d.latest || {}
+
+  return (
+    <Modal
+      title={
+        <Space size={8} wrap>
+          <span>{name || code || '个股'}</span>
+          <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>{code}</Text>
+          {d.available && L.close != null ? (
+            <>
+              <Text style={{ fontSize: 13, fontWeight: 400 }}>
+                最新 <b style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt2(L.close)}</b>
+              </Text>
+              <Text style={{ fontSize: 13, fontWeight: 400, color: pctColor(L.pct) }}>
+                {fmtPct(L.pct)}
+              </Text>
+              <Text style={{ fontSize: 12, fontWeight: 400, color: '#fa8c16' }}>
+                EMA20 {fmt2(L.ema20)}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>{L.date}</Text>
+            </>
+          ) : null}
+        </Space>
+      }
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      width={920}
+      destroyOnClose
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size={10}>
+        <Space size={8} wrap>
+          {[60, 120, 250].map((x) => (
+            <Button
+              key={x}
+              size="small"
+              type={days === x ? 'primary' : 'default'}
+              disabled={loading}
+              onClick={() => onDays(x)}
+            >
+              近 {x} 日
+            </Button>
+          ))}
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            日线（前复权）+ EMA20
+          </Text>
+          {d.available && d.source ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>· {d.source}</Text>
+          ) : null}
+        </Space>
+        {d.available && d.note ? <Alert type="warning" showIcon message={d.note} /> : null}
+        {loading ? (
+          <div style={{ height: 420, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Spin />
+          </div>
+        ) : d.available ? (
+          <ReactECharts option={option} style={{ height: 420 }} notMerge />
+        ) : (
+          <Empty description={d.note || '未取到该股行情数据'} />
+        )}
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          数据源：腾讯 / 新浪日K直连（前复权）；EMA20 首值取前 20 根收盘均价作种子，与通达信、东财一致。
+          红为阳线、绿为阴线；默认展示最近约 130 根，可拖动下方滑块回看更早。
+        </Text>
+      </Space>
+    </Modal>
+  )
+}
+
 export default function DailyReview() {
   // 默认定位最近交易日（周末自动回退到周五，节假日需手动选择）
   const [date, setDate] = useState(() => {
@@ -1516,6 +1731,41 @@ export default function DailyReview() {
   const [miniTrend, setMiniTrend] = useState(null)
   const [miniLoading, setMiniLoading] = useState(false)
   const [miniDays, setMiniDays] = useState(10)
+
+  // 个股日线弹窗（V1.009.4）：点股票名称 → 日线图 + EMA20
+  const [stockModal, setStockModal] = useState({
+    open: false,
+    code: '',
+    name: '',
+    days: 120,
+    loading: false,
+    data: null,
+  })
+
+  const loadStock = useCallback(async (code, nm, days) => {
+    setStockModal({ open: true, code, name: nm || '', days, loading: true, data: null })
+    try {
+      const r = await getStockKline(code, days)
+      setStockModal((st) => (st.code === code ? { ...st, loading: false, data: r } : st))
+    } catch (e) {
+      // 取数失败只在弹窗里提示，不弹全局 message（弹窗本身就是这次交互的载体）
+      setStockModal((st) =>
+        st.code === code
+          ? {
+              ...st,
+              loading: false,
+              data: { available: false, note: `行情获取失败：${e?.message || e}` },
+            }
+          : st,
+      )
+    }
+  }, [])
+
+  const openStock = useCallback((code, nm) => loadStock(code, nm, 120), [loadStock])
+  const changeStockDays = useCallback(
+    (n) => loadStock(stockModal.code, stockModal.name, n),
+    [loadStock, stockModal.code, stockModal.name],
+  )
 
   // 快照来源与历史重建（V1.009.1）
   const [snapLoading, setSnapLoading] = useState(false)
@@ -1790,7 +2040,7 @@ export default function DailyReview() {
       width: 110,
       render: (v, r) => (
         <Space size={4}>
-          <Text strong>{v}</Text>
+          <StockName code={r.code} name={v} onOpen={openStock} strong />
           {r.is_st && <Tag color="default">ST</Tag>}
         </Space>
       ),
@@ -1820,7 +2070,7 @@ export default function DailyReview() {
 
   const zbColumns = [
     { title: '代码', dataIndex: 'code', width: 78 },
-    { title: '名称', dataIndex: 'name', width: 110 },
+    { title: '名称', dataIndex: 'name', width: 118, render: (v, r) => <StockName code={r.code} name={v} onOpen={openStock} /> },
     {
       title: '涨跌幅',
       dataIndex: 'pct',
@@ -1837,7 +2087,7 @@ export default function DailyReview() {
 
   const dtColumns = [
     { title: '代码', dataIndex: 'code', width: 78 },
-    { title: '名称', dataIndex: 'name', width: 110 },
+    { title: '名称', dataIndex: 'name', width: 118, render: (v, r) => <StockName code={r.code} name={v} onOpen={openStock} /> },
     {
       title: '涨跌幅',
       dataIndex: 'pct',
@@ -1851,7 +2101,7 @@ export default function DailyReview() {
 
   const ppColumns = [
     { title: '代码', dataIndex: 'code', width: 78 },
-    { title: '名称', dataIndex: 'name', width: 110 },
+    { title: '名称', dataIndex: 'name', width: 118, render: (v, r) => <StockName code={r.code} name={v} onOpen={openStock} /> },
     { title: '昨日', dataIndex: 'prev_stat', width: 88, render: (v, r) => v || (r.prev_lbc > 1 ? `${r.prev_lbc}板` : '首板') },
     {
       title: '今日涨跌幅',
@@ -2144,51 +2394,6 @@ export default function DailyReview() {
       >
         {snap && (
           <>
-            {/* 近期情绪趋势（V1.009.3）：把核心情绪指标拉成时间序列，先看"变化方向"再看单日数据 */}
-            <Card
-              size="small"
-              style={{ marginBottom: 12 }}
-              title={
-                <Space size={4}>
-                  <LineChartOutlined />
-                  <span>近期情绪趋势</span>
-                  <Hint k="trend_mini" />
-                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-                    近 {miniDays} 个交易日
-                  </Text>
-                </Space>
-              }
-              extra={
-                <Space size={8}>
-                  {[5, 10, 20].map((d) => (
-                    <Button
-                      key={d}
-                      size="small"
-                      type={miniDays === d ? 'primary' : 'default'}
-                      onClick={() => setMiniDays(d)}
-                    >
-                      {d} 日
-                    </Button>
-                  ))}
-                  <Button
-                    size="small"
-                    icon={<LineChartOutlined />}
-                    onClick={() => openTrend(miniDays)}
-                  >
-                    放大查看
-                  </Button>
-                </Space>
-              }
-              bodyStyle={{ padding: 12 }}
-            >
-              <MiniTrendGrid
-                data={miniTrend}
-                loading={miniLoading}
-                mainLines={snap?.concept?.main_lines}
-                days={miniDays}
-              />
-            </Card>
-
             {/* 指数 + 情绪指标（两卡等高、横向对齐）
                 注：alignItems 同时写在内联 style 里 —— antd 的 align 是运行时拼 class 名，
                 若对应 CSS 未注入则不生效，内联可确保 Col 被拉伸、Card 的 height:100% 才拿得到高度 */}
@@ -2261,16 +2466,11 @@ export default function DailyReview() {
                       <Statistic
                         title={
                           <span style={TXT_L1}>
-                            涨停（剔ST）
+                            涨停家数
                             <Hint k="limit_up" />
                           </span>
                         }
                         value={fmtCount(e.limit_up)}
-                        suffix={
-                          e.limit_up_inc_st == null ? null : (
-                            <span style={TXT_L3_DIM}>/{fmtCount(e.limit_up_inc_st)}</span>
-                          )
-                        }
                         valueStyle={{ ...TXT_L2, color: RED }}
                       />
                     </Col>
@@ -2278,16 +2478,11 @@ export default function DailyReview() {
                       <Statistic
                         title={
                           <span style={TXT_L1}>
-                            跌停（剔ST）
+                            跌停家数
                             <Hint k="limit_down" />
                           </span>
                         }
                         value={fmtCount(e.limit_down)}
-                        suffix={
-                          e.limit_down_inc_st == null ? null : (
-                            <span style={TXT_L3_DIM}>/{fmtCount(e.limit_down_inc_st)}</span>
-                          )
-                        }
                         valueStyle={{ ...TXT_L2, color: GREEN }}
                       />
                     </Col>
@@ -2308,16 +2503,11 @@ export default function DailyReview() {
                       <Statistic
                         title={
                           <span style={TXT_L1}>
-                            炸板家数（剔ST）
+                            炸板家数
                             <Hint k="broken" />
                           </span>
                         }
                         value={fmtCount(e.broken)}
-                        suffix={
-                          e.broken_inc_st == null ? null : (
-                            <span style={TXT_L3_DIM}>/{fmtCount(e.broken_inc_st)}</span>
-                          )
-                        }
                         valueStyle={{ ...TXT_L2 }}
                       />
                     </Col>
@@ -2397,7 +2587,7 @@ export default function DailyReview() {
             {/* 涨跌家数分布 + 连板梯队 */}
             <Row gutter={12} style={{ marginBottom: 12 }}>
               <Col span={11}>
-                <Card size="small" title="涨跌家数分布（剔除ST与涨跌停口径见说明）" bodyStyle={{ padding: 12 }}>
+                <Card size="small" title="涨跌家数分布" bodyStyle={{ padding: 12 }}>
                   <BreadthBoard snap={snap} />
                 </Card>
               </Col>
@@ -2432,7 +2622,9 @@ export default function DailyReview() {
                             <Space size={[4, 4]} wrap>
                               {v.map((s) => (
                                 <Tooltip key={s.code} title={`${s.code} ${s.industry} ${s.fbt}封板`}>
-                                  <Tag style={{ margin: 0 }}>{s.name}</Tag>
+                                  <Tag style={{ margin: 0 }}>
+                                    <StockName code={s.code} name={s.name} onOpen={openStock} fontSize={12} />
+                                  </Tag>
                                 </Tooltip>
                               ))}
                             </Space>
@@ -2461,6 +2653,51 @@ export default function DailyReview() {
               </Col>
             </Row>
 
+            {/* 近期情绪趋势（V1.009.3）：把核心情绪指标拉成时间序列，先看"变化方向"再看单日数据 */}
+            <Card
+              size="small"
+              style={{ marginBottom: 12 }}
+              title={
+                <Space size={4}>
+                  <LineChartOutlined />
+                  <span>近期情绪趋势</span>
+                  <Hint k="trend_mini" />
+                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                    近 {miniDays} 个交易日
+                  </Text>
+                </Space>
+              }
+              extra={
+                <Space size={8}>
+                  {[5, 10, 20].map((d) => (
+                    <Button
+                      key={d}
+                      size="small"
+                      type={miniDays === d ? 'primary' : 'default'}
+                      onClick={() => setMiniDays(d)}
+                    >
+                      {d} 日
+                    </Button>
+                  ))}
+                  <Button
+                    size="small"
+                    icon={<LineChartOutlined />}
+                    onClick={() => openTrend(miniDays)}
+                  >
+                    放大查看
+                  </Button>
+                </Space>
+              }
+              bodyStyle={{ padding: 12 }}
+            >
+              <MiniTrendGrid
+                data={miniTrend}
+                loading={miniLoading}
+                mainLines={snap?.concept?.main_lines}
+                days={miniDays}
+              />
+            </Card>
+
             {/* 概念板块情绪周期（V1.009.1） */}
             <Card
               size="small"
@@ -2476,7 +2713,7 @@ export default function DailyReview() {
                 ) : null
               }
             >
-              <ConceptEmotion concept={snap.concept} />
+              <ConceptEmotion concept={snap.concept} onOpenStock={openStock} />
             </Card>
 
             {/* 严重异动提醒（V1.009.2） */}
@@ -2508,7 +2745,7 @@ export default function DailyReview() {
                 </Text>
               }
             >
-              <AbnormalWatch abnormal={snap.abnormal} />
+              <AbnormalWatch abnormal={snap.abnormal} onOpenStock={openStock} />
             </Card>
 
             {/* 游资动向（V1.009.2） */}
@@ -2523,7 +2760,7 @@ export default function DailyReview() {
                 </Text>
               }
             >
-              <YouziFlow youzi={snap.youzi} />
+              <YouziFlow youzi={snap.youzi} onOpenStock={openStock} />
             </Card>
 
             {/* 股票热度榜（V1.009.2） */}
@@ -2538,7 +2775,7 @@ export default function DailyReview() {
                 </Text>
               }
             >
-              <HotList hot={snap.hot} />
+              <HotList hot={snap.hot} onOpenStock={openStock} />
             </Card>
 
             {/* 个股明细 */}
@@ -2818,6 +3055,18 @@ export default function DailyReview() {
           )}
         </Space>
       </Modal>
+
+      {/* 个股日线弹窗（V1.009.4） */}
+      <StockKlineModal
+        open={stockModal.open}
+        code={stockModal.code}
+        name={stockModal.name}
+        days={stockModal.days}
+        loading={stockModal.loading}
+        data={stockModal.data}
+        onDays={changeStockDays}
+        onClose={() => setStockModal((st) => ({ ...st, open: false }))}
+      />
     </div>
   )
 }

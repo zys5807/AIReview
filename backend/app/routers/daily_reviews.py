@@ -168,6 +168,27 @@ def concept_history(
     return {"code": "", "boards": ranked, "note": ""}
 
 
+@router.get("/stock-kline")
+def stock_kline(
+    code: str = Query(..., min_length=6, max_length=6, description="6 位股票代码"),
+    days: int = Query(120, ge=30, le=500, description="返回的日线根数"),
+    _user: User = Depends(get_current_user),
+):
+    """个股前复权日线 + EMA20（供「点击股票名称看日线」弹窗使用）
+
+    数据源：腾讯 qfq 日K（自带新浪兜底）→ 东财 push2his（末位兜底）。
+    失败一律返回 available=False + note，前端展示为「取不到数据」，绝不抛错中断弹窗。
+    """
+    from ..services import market_data as md
+
+    try:
+        return md.stock_daily_bars(code, days)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return {"available": False, "code": code,
+                "note": "行情获取失败（%s），请稍后重试" % type(e).__name__}
+
+
 @router.get("/trend")
 def trend(
     end: str = Query(..., description="结束日期 YYYY-MM-DD"),

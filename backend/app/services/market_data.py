@@ -230,6 +230,28 @@ def _astock_bars(code: str, start: str, end: str) -> list | None:
     return rows or None
 
 
+def _sina_daily_bars(code: str, max_n: int = 500) -> list | None:
+    """新浪日K（支持沪深京）→ [date, open, close, high, low, volume]
+
+    为什么要单独建一个而不复用 _astock_bars：那个函数对行做了 start<=d<=end 的
+    窗口过滤，且腾讯源一旦返回「非空但残缺」（如北交所只给 1 根）就会短路返回、
+    不再降级。本函数不做窗口过滤，交由调用方按根数择优。
+    """
+    url = ("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?"
+           "symbol=" + code + "&scale=240&ma=no&datalen=" + str(max(5, min(int(max_n), 1023))))
+    j = _fetch_json(url, headers=SINA_HEADERS, timeout=10, retries=1)
+    if not isinstance(j, list) or not j:
+        return None
+    rows = []
+    for x in j:
+        try:
+            rows.append([(x or {}).get("day"), (x or {}).get("open"), (x or {}).get("close"),
+                         (x or {}).get("high"), (x or {}).get("low"), (x or {}).get("volume")])
+        except Exception:  # noqa: BLE001
+            continue
+    return rows or None
+
+
 def _em_kline_rows(secid: str, beg: str, end: str, lmt: int = 400) -> list | None:
     """东财 push2his 日K（个股/板块/期货统一）：返回 "date,open,close,high,low,volume" 字符串列表"""
     url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=%s&ut=%s"
@@ -381,24 +403,34 @@ def _em_rows_pct(rows: list[str]) -> dict | None:
     return _bars_pct(bars)
 
 
+def _is_bj_code(code: str) -> bool:
+    """北交所代码：43/83/87/88 开头（新三板转板）与 920 开头（2023 起新号段）
+
+    必须**先于**「9 开头 = 沪市」判断 —— 920xxx 也是 9 开头，曾被误判成沪市
+    （`_em_secid_of_stock("920819")` 返回 "1.920819"、`_tencent_code_of_stock`
+     返回 "sh920819"，两者都取不到行情：实测 sh920819 无数据、bj920819 正常）。
+    """
+    return code.startswith(("4", "8")) or code.startswith("92")
+
+
 def _em_secid_of_stock(code: str) -> str:
     """A股代码 → 东财 secid（sh/sz/bj 前缀推断）"""
-    if code.startswith(("6", "9", "5")):  # 沪市 6 开头 A股（68 科创）；沪基金 5
+    if _is_bj_code(code):  # 北交所（先判，避免被下面的 "9" 吃掉）
+        return "0." + code
+    if code.startswith(("6", "9", "5")):  # 沪市 6 开头 A股（68 科创）；沪基金 5；沪 B 900
         return "1." + code
     if code.startswith(("0", "3")):  # 深市 0 主板 / 3 创业板
-        return "0." + code
-    if code.startswith(("4", "8", "92")):  # 北交所
         return "0." + code
     return "0." + code
 
 
 def _tencent_code_of_stock(code: str) -> str:
+    if _is_bj_code(code):
+        return "bj" + code
     if code.startswith(("6", "9", "5")):
         return "sh" + code
     if code.startswith(("0", "3")):
         return "sz" + code
-    if code.startswith(("4", "8", "92")):
-        return "bj" + code
     return "sz" + code
 
 
@@ -704,3 +736,145 @@ def collect_market(instrument_type: str, start: str, end: str, quick: bool = Fal
     snap["data"] = part
     snap["elapsed_sec"] = round(time.time() - t0, 1)
     return snap
+
+
+# ---------------------------------------------------------------------------
+# 个股日线（V1.009.4）：点击股票名称 → 日线图 + EMA20
+# ---------------------------------------------------------------------------
+
+_STOCK_BARS_CACHE: dict = {}
+_STOCK_BARS_TTL = 600.0   # 秒：同一只股票 10 分钟内不重复联网（弹窗会反复开关）
+_STOCK_BARS_MAX = 240     # 缓存条数上限（长期运行不膨胀）
+
+
+def ema(values: list, n: int = 20) -> list:
+    """指数移动平均：首值取前 n 项算术均值作种子（与通达信 / 东财一致）
+
+    不足 n 项的位返回 None —— 图表上折线从第 n 根 K 线才出现，
+    而不是拿不足长度的样本硬算出一个失真的开头。
+    """
+    out = [None] * len(values)
+    if n <= 0 or len(values) < n:
+        return out
+    k = 2.0 / (n + 1.0)
+    prev = sum(values[:n]) / float(n)
+    out[n - 1] = round(prev, 3)
+    for i in range(n, len(values)):
+        prev = values[i] * k + prev * (1.0 - k)
+        out[i] = round(prev, 3)
+    return out
+
+
+def stock_daily_bars(code: str, days: int = 120) -> dict:
+    """个股前复权日线 OHLC + EMA20（供「点击股票名称看日线」弹窗使用）
+
+    源顺序：腾讯 qfq 日K（函数内自带新浪兜底）→ 东财 push2his。
+    实测本机网络下东财 push2his 常返回空（限流 / TLS 指纹被拒），故只作末位兜底；
+    腾讯对沪深主板 / 创业板 / 科创板 / 北交所均可用（北交所需 bj 前缀，见 _is_bj_code）。
+
+    返回：
+      {available, code, source, dates[], klines[[open,close,low,high]...],
+       closes[], ema20[], latest:{close,pct,ema20,date}, days, note}
+      注：klines 的元素顺序按 ECharts K线图要求 —— [开, 收, 最低, 最高]
+    """
+    code = str(code or "").strip()
+    if not (len(code) == 6 and code.isdigit()):
+        return {"available": False, "code": code, "note": "股票代码应为 6 位数字"}
+    days = max(30, min(int(days or 120), 500))
+
+    ck = (code, days)
+    now = time.time()
+    hit = _STOCK_BARS_CACHE.get(ck)
+    if hit and now - hit[0] < _STOCK_BARS_TTL:
+        return hit[1]
+
+    today = _dt.date.today()
+    end = today.strftime("%Y-%m-%d")
+    # 交易日约占自然日 5/7，再留 30 天冗余保证能取满 days 根
+    beg = (today - _dt.timedelta(days=int(days * 1.7) + 30)).strftime("%Y-%m-%d")
+
+    tc = _tencent_code_of_stock(code)
+    cands = []
+    for name, fn in (
+        ("腾讯日K（前复权）", lambda: _tencent_bars(tc, beg, end, max_n=520)),
+        ("新浪日K", lambda: _sina_daily_bars(tc, 520)),
+        ("东财 push2his（前复权）",
+         lambda: _em_kline_rows(_em_secid_of_stock(code), beg, end, lmt=min(600, days + 60))),
+    ):
+        try:
+            r = fn()
+        except Exception:  # noqa: BLE001 单源失败静默降级
+            r = None
+        if r:
+            cands.append((name, r))
+    if not cands:
+        out = {"available": False, "code": code,
+               "note": "行情源未返回数据（可能停牌 / 退市 / 接口临时限流）"}
+        _STOCK_BARS_CACHE[ck] = (now, out)
+        return out
+    # 择优规则：先看有没有源给够了 days 根，够就按上面的优先级取（腾讯优先）；
+    # 都不够再取「根数最多」的那个。
+    # 为什么不能简单地「第一个非空即用」：腾讯对北交所常只返回 1 根（非空但残缺），
+    # 会短路掉真正完整的新浪源。
+    source, rows = "", None
+    for _name, _r in cands:
+        if len(_r) >= days:
+            source, rows = _name, _r
+            break
+    if rows is None:
+        source, rows = max(cands, key=lambda x: len(x[1]))
+
+    bars = []
+    for x in rows:
+        try:
+            if isinstance(x, str):          # 东财：'date,open,close,high,low,...'
+                p = x.split(",")
+                d, o, c, h, l = p[0], p[1], p[2], p[3], p[4]
+            else:                            # 腾讯/新浪：[date, open, close, high, low, vol]
+                d, o, c, h, l = x[0], x[1], x[2], x[3], x[4]
+            o, c, h, l = float(o), float(c), float(h), float(l)
+        except Exception:  # noqa: BLE001
+            continue
+        if o <= 0 or c <= 0:
+            continue
+        # 个别源的 high/low 缺失或反了（停牌日）：用开收兜底
+        h = max(h, o, c)
+        l = min(l, o, c) if l > 0 else min(o, c)
+        bars.append((str(d), o, c, h, l))
+    if not bars:
+        return {"available": False, "code": code, "note": "行情数据无法解析"}
+
+    bars = bars[-days:]
+    dates = [b[0] for b in bars]
+    closes = [b[2] for b in bars]
+    klines = [[b[1], b[2], b[4], b[3]] for b in bars]     # [开, 收, 最低, 最高]
+    e20 = ema(closes, 20)
+
+    latest = {
+        "date": dates[-1],
+        "close": round(closes[-1], 3),
+        "ema20": e20[-1],
+        "pct": None,
+    }
+    if len(closes) >= 2 and closes[-2]:
+        latest["pct"] = round((closes[-1] / closes[-2] - 1.0) * 100.0, 2)
+
+    out = {
+        "available": True,
+        "code": code,
+        "source": source,
+        "days": len(bars),
+        "dates": dates,
+        "klines": klines,
+        "closes": closes,
+        "ema20": e20,
+        "latest": latest,
+        "note": ("" if len(bars) >= 20
+                 else "该股仅取到 %d 根日线，不足 20 根，EMA20 无法计算" % len(bars)),
+    }
+    if len(_STOCK_BARS_CACHE) >= _STOCK_BARS_MAX:
+        # 简单淘汰：丢弃最早写入的一半
+        for k in sorted(_STOCK_BARS_CACHE, key=lambda x: _STOCK_BARS_CACHE[x][0])[: _STOCK_BARS_MAX // 2]:
+            _STOCK_BARS_CACHE.pop(k, None)
+    _STOCK_BARS_CACHE[ck] = (now, out)
+    return out
