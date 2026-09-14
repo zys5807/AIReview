@@ -114,25 +114,28 @@ const BIN_TIP = (label, rule) => ({
 
 const TIP = {
   limit_up: {
-    t: '涨停家数 / 剔除 ST 后家数',
-    d: '收盘价等于涨停价的个股家数；斜杠后为剔除 ST、*ST 后的家数。',
+    t: '涨停家数（已剔除 ST/*ST）',
+    d: '收盘价等于涨停价的个股家数。主口径已剔除 ST、*ST，与东财「涨停板行情」页的涨跌停对比一致；斜杠后为含 ST 口径 —— 东财首页 / APP 显示的是后者，通常比主口径多 1~3 家。',
     f: [
       '涨停价 = 涨跌停基数 × (1 + 涨跌幅限制)，取整到分',
       '基数取交易所「除权参考价」，不是前复权前收（除权日两者不同）',
-      '涨跌幅限制：主板 10%、创业板/科创板 20%、北交所 30%、主板 ST 5%',
+      '涨跌幅限制：主板 10%、创业板/科创板 20%、北交所 30%',
+      '主板 ST/*ST 常态按 5%，但摘帽 / 复牌等特殊日按 10% 执行 —— 由当日价格反推实际档位',
       '取整：沪深四舍五入（允许略越界）；北交所不越界（涨停向下、跌停向上）',
+      '东财涨停池本身不收录 ST，故实时与历史两条路径都按「剔 ST」输出，口径一致',
     ],
-    s: '最近交易日取东财涨停池；历史日由全市场约 5900 只个股的日K聚合（东财池不收录 ST，故日K口径含 ST）',
+    s: '最近交易日取东财涨停池（该池不收录 ST/*ST）；历史日由全市场约 5900 只个股的日K聚合，并按同一口径剔除 ST',
   },
   limit_down: {
-    t: '跌停家数 / 剔除 ST 后家数',
-    d: '收盘价等于跌停价的个股家数；斜杠后为剔除 ST、*ST 后的家数。',
+    t: '跌停家数（已剔除 ST/*ST）',
+    d: '收盘价等于跌停价的个股家数。主口径已剔除 ST、*ST；斜杠后为含 ST 口径。',
     f: [
       '跌停价 = 涨跌停基数 × (1 − 涨跌幅限制)，取整到分',
-      '北交所跌停向上取整（与涨停同向不越界）；主板 ST 为 5%',
+      '北交所跌停向上取整（与涨停同向不越界）',
       '基数同涨停：交易所除权参考价',
+      '东财跌停池不收录 ST，实时与历史两条路径都按「剔 ST」输出',
     ],
-    s: '最近交易日取东财跌停池；历史日由个股日K聚合',
+    s: '最近交易日取东财跌停池（不收录 ST/*ST）；历史日由个股日K聚合后按同一口径剔除 ST',
   },
   max_lbc: {
     t: '最高连板',
@@ -144,14 +147,15 @@ const TIP = {
     s: '历史日为日K聚合；最近交易日取东财涨停池自带连板数',
   },
   broken: {
-    t: '炸板家数',
-    d: '当日曾触及涨停价、但收盘未封住涨停的个股家数。',
+    t: '炸板家数（已剔除 ST/*ST）',
+    d: '当日曾触及涨停价、但收盘未封住涨停的个股家数。主口径已剔除 ST、*ST；斜杠后为含 ST 口径。',
     f: [
       '历史日口径（日K）：当日最高价 ≥ 涨停价 且 收盘价 < 涨停价',
       '最近交易日口径（东财炸板池）：盘中真的封过板、收盘未封住；不收录 ST',
-      '两口径实测差异：剔 ST 后 +15%、含 ST 全部 +26% —— 日K无分时数据，无法区分「封后开板」与「瞬时摸板」，必然略多计',
+      '两口径实测差异：日K无分时数据，无法区分「封后开板」与「瞬时摸板」，必然略多计',
+      '两条路径均已按「剔 ST」输出，含 ST 家数由全市场快照另行核算',
     ],
-    s: '最近约 15 个交易日走东财炸板池；更早由个股日K聚合',
+    s: '最近约 15 个交易日走东财炸板池（不收录 ST/*ST）；更早由个股日K聚合后按同一口径剔除 ST',
   },
   broken_rate: {
     t: '炸板率',
@@ -191,13 +195,14 @@ const TIP = {
   },
   prev_zt_perf: {
     t: '昨日涨停股今日平均表现',
-    d: '上一个交易日的涨停股，在当日的涨跌幅算术平均值。',
+    d: '上一个交易日的涨停股，在当日的涨跌幅算术平均值。主口径已剔除 ST、*ST。',
     f: [
       '衡量「接力效应」：正值说明昨日封板资金今日仍能获利，情绪延续；负值说明炸板亏钱、情绪转弱',
       '取不到当日价格的（停牌等）不参与均值，括号内为有效家数',
-      '「再涨停」按当日涨停判定口径统计',
+      '昨日涨停名单与上方「涨停（剔ST）」严格同源：实时池与历史日K重建两条路径都按「剔 ST」输出，因此括号内的只数必然等于前一交易日的涨停家数',
+      '「再涨停」按同一口径统计，即当日剔 ST 后仍封涨停的家数',
     ],
-    s: '历史日由日K聚合回溯；最近交易日优先用实时全市场快照',
+    s: '历史日由日K聚合回溯并按同一口径剔除 ST；最近交易日优先用实时全市场快照',
   },
   up_count: {
     t: '上涨家数',
@@ -321,6 +326,50 @@ const TIP = {
       '连板数由日K逐日回溯（口径同涨跌停判定）；近 5 日累计涨幅 = 当日收盘 ÷ 5 个交易日前收盘 − 1',
     ],
     s: '板块成分股（东财，含市值）+ 个股日K（涨跌幅 / 成交额 / 连板 / 近5日涨幅）',
+  },
+  trend_first_board: {
+    t: '首板 / 连板家数',
+    d: '把当日涨停股按连板数分档：首板 = 连板数等于 1 的个股数，连板 = 连板数 ≥ 2 的个股数。两者之和即涨停家数。',
+    f: [
+      '连板数由日K逐日回溯（遇到非涨停日即断），口径与「涨停家数」完全一致',
+      '首板代表新增做多力量（新资金进场），连板代表存量赚钱效应的延续',
+      '首板占比高 = 情绪刚启动或轮动补涨；连板家数快速萎缩 = 接力意愿转弱，情绪退潮的先行信号',
+      '首板 + 连板 = 涨停家数，可与当日看板的涨停家数互相验证',
+    ],
+    s: '最近交易日取东财涨停池自带的连板数；历史日由全市场个股日K聚合',
+  },
+  trend_up_ratio: {
+    t: '上涨家数占比',
+    d: '(上涨家数 + 涨停家数) ÷ (上涨家数 + 下跌家数 + 平盘家数 + 涨停家数 + 跌停家数) × 100%',
+    f: [
+      '即全部有行情品种中红盘个股的比例，50% 为多空平衡线',
+      '「涨跌家数分布」表里的上涨/下跌家数是四档区间家数之和，本身不含涨跌停（涨跌停与平盘单列）；本指标把涨停并入分子、把涨跌停与平盘一并并入分母，因此与分布表可对上账',
+      '用于区分「普涨」与「结构行情」：占比高但涨停少 = 普涨但无主线；占比低但涨停多 = 极度分化、只有少数票在涨',
+    ],
+    s: '同「涨跌家数分布」：最近交易日用实时全市场快照，历史日由全市场个股日K聚合',
+  },
+  trend_mini: {
+    t: '近期情绪趋势（近 N 个交易日）',
+    d: '把当日看板上的核心情绪指标拉成时间序列，用来观察「变化的方向与斜率」，而不是只看单日绝对值。',
+    f: [
+      '每张小图为该指标最近 N 个交易日的走势；右上角为最新值，以及它相对前一个「有数据交易日」的变化',
+      '升降标记按指标语义着色：涨停、首板、连板、昨涨停股表现、上涨占比「升高为红（情绪转好）」；跌停、炸板、炸板率「升高为绿（情绪转差）」',
+      '折线在中间断开表示该交易日取不到数据（例如尚未做历史数据重建），不是数值为 0',
+      '数据点随所选日期变化：以页面当前所选交易日为终点向前取 N 个交易日',
+      '涨停 / 跌停 / 炸板三个家数，以及「昨涨停股表现」的样本名单，均已剔除 ST、*ST，与当日看板、东财「涨停板行情」页口径一致',
+    ],
+    s: '本地每日快照缓存（历史重建写入，可覆盖约 60 个交易日）；缓存缺失且在回溯窗口内时用东财实时池回补',
+  },
+  trend_concept_zt: {
+    t: '主线题材涨停家数',
+    d: '当日主线题材表里「有历史序列」的前 3 条题材，各自最近 N 个交易日的涨停成分股家数。',
+    f: [
+      '口径与全局「涨停家数」完全一致（除权参考价 + 板块涨跌幅限制 + 取整规则）',
+      '数据来自当日快照的 concept.main_lines[].seq（固定约 10 日窗口），按卡片天数取末尾 N 个点，不额外联网',
+      '看的是题材的接力节奏：曲线持续上行 = 主线在扩散、资金在同一条线上加注；曲线见顶回落而新题材抬头 = 主线切换',
+      '与上面「涨停家数」小图配合看：总涨停家数不变但主线曲线集体走弱，说明是散乱普涨而非主线行情',
+    ],
+    s: '涨停股归属概念 / 板块近 10 日序列（最近交易日走实时，历史日由板块行重建数据）',
   },
 }
 
@@ -549,6 +598,249 @@ function RolePanel({ roles }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// 近期情绪趋势（V1.009.3）：把核心情绪指标拉成时间序列，多图横向排列
+// 目的：看「情绪的变化方向」，而不是静止地看某一天的数据
+// ---------------------------------------------------------------------------
+const MINI_TRENDS = [
+  { key: 'limit_up', label: '涨停家数', unit: '家', color: '#d9363e', goodWhenUp: true, tip: 'limit_up', dec: 0 },
+  { key: 'limit_down', label: '跌停家数', unit: '家', color: '#3fa14a', goodWhenUp: false, tip: 'limit_down', dec: 0 },
+  { key: 'broken', label: '炸板家数', unit: '家', color: '#d46b08', goodWhenUp: false, tip: 'broken', dec: 0 },
+  { key: 'broken_rate', label: '炸板率', unit: '%', color: '#fa8c16', goodWhenUp: false, tip: 'broken_rate', dec: 2 },
+  { key: 'first_board', label: '首板家数', unit: '家', color: '#f5222d', goodWhenUp: true, tip: 'trend_first_board', dec: 0 },
+  { key: 'multi_board', label: '连板家数', unit: '家', color: '#d4380d', goodWhenUp: true, tip: 'trend_first_board', dec: 0 },
+  { key: 'prev_lu_avg', label: '昨涨停股今表现', unit: '%', color: '#fa541c', goodWhenUp: true, tip: 'prev_zt_perf', dec: 2, refLine: 0 },
+  { key: 'up_ratio', label: '上涨家数占比', unit: '%', color: '#eb2f96', goodWhenUp: true, tip: 'trend_up_ratio', dec: 2, refLine: 50 },
+]
+
+/**
+ * 主线题材涨停家数小图（V1.009.3）：与上面 8 个情绪指标共用同一张网格。
+ * 数据来自当日快照的 concept.main_lines[].seq（字段 date / zt），与趋势接口无关，
+ * 因此不随 miniDays 重新请求，只按天数截取 seq 末尾 —— 与卡片标题的「近 N 日」对齐。
+ */
+const CONCEPT_MINI_COLORS = ['#d9363e', '#1677ff', '#722ed1']
+const conceptMiniMetric = (name, i) => ({
+  key: 'zt',
+  label: `${name} 涨停`,
+  unit: '家',
+  color: CONCEPT_MINI_COLORS[i % CONCEPT_MINI_COLORS.length],
+  goodWhenUp: true,
+  tip: 'trend_concept_zt',
+  dec: 0,
+})
+
+/** #RRGGBB + alpha → rgba()：折线下方的淡面积填充 */
+function hexA(hex, a) {
+  const n = parseInt(String(hex).replace('#', ''), 16)
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
+}
+
+const miniFmt = (v, dec = 0) => (v == null || Number.isNaN(v) ? '-' : Number(v).toFixed(dec))
+
+function MiniTrendCell({ metric, items }) {
+  const dates = items.map((x) => String(x.date || '').slice(5))
+  const vals = items.map((x) => (x[metric.key] == null ? null : Number(x[metric.key])))
+
+  // 最新值 与 上一个「确实有数据」的值 —— 跳过 null，否则会把「取不到」当成 0 参与变化计算
+  let lastIdx = -1
+  let prevIdx = -1
+  for (let i = vals.length - 1; i >= 0; i -= 1) {
+    if (vals[i] == null) continue
+    if (lastIdx < 0) lastIdx = i
+    else {
+      prevIdx = i
+      break
+    }
+  }
+  const lastVal = lastIdx >= 0 ? vals[lastIdx] : null
+  const prevVal = prevIdx >= 0 ? vals[prevIdx] : null
+  const delta = lastVal != null && prevVal != null ? lastVal - prevVal : null
+
+  // 升降标记按指标语义着色：变好=红、变差=绿（A股习惯），持平=灰
+  const deltaColor =
+    delta == null || delta === 0 ? '#8c8c8c' : (delta > 0) === metric.goodWhenUp ? RED : GREEN
+
+  const option = {
+    // 迷你图关掉入场动画：父组件每次 re-render 都会重建 option，ECharts 会重播动画，
+    // 既造成整片闪烁，也会让截图/首屏抓到"只画了一小截"的中间态
+    animation: false,
+    grid: { left: 6, right: 8, top: 8, bottom: 4 },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      textStyle: { fontSize: 12 },
+      formatter: (ps) => {
+        const p = ps && ps[0]
+        if (!p) return ''
+        const v = p.value
+        const sv = v == null ? '无数据' : `${miniFmt(v, metric.dec)}${metric.unit}`
+        return `${p.axisValue}<br/>${metric.label}：${sv}`
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      boundaryGap: false,
+      axisLine: { lineStyle: { color: '#f0f0f0' } },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      splitNumber: 2,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: { lineStyle: { color: '#f5f5f5', type: 'dashed' } },
+    },
+    series: [
+      {
+        type: 'line',
+        data: vals,
+        smooth: true,
+        connectNulls: false, // 中间断开表示该日取不到数据，不要连成假线
+        showSymbol: false,
+        symbolSize: 5,
+        lineStyle: { width: 2, color: metric.color },
+        itemStyle: { color: metric.color },
+        areaStyle: { color: hexA(metric.color, 0.12) },
+        // 有天然基准的指标画一条参考线，否则看不出正负/多空分界
+        // （昨涨停股今表现 0% = 不赚不亏；上涨家数占比 50% = 多空平衡）
+        ...(metric.refLine != null
+          ? {
+              markLine: {
+                silent: true,
+                symbol: 'none',
+                label: { show: false },
+                lineStyle: { color: '#d9d9d9', type: 'dashed', width: 1 },
+                data: [{ yAxis: metric.refLine }],
+              },
+            }
+          : {}),
+      },
+    ],
+  }
+
+  return (
+    <div
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        padding: '8px 10px 2px',
+        height: '100%',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 13, fontWeight: 500 }}>
+          {metric.label}
+          <Hint k={metric.tip} />
+        </Text>
+        <span style={{ whiteSpace: 'nowrap' }}>
+          <span
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              fontVariantNumeric: 'tabular-nums',
+              color: metric.color,
+            }}
+          >
+            {miniFmt(lastVal, metric.dec)}
+          </span>
+          <span style={{ fontSize: 11, color: '#8c8c8c', marginLeft: 2 }}>{metric.unit}</span>
+          {delta != null && (
+            <span style={{ fontSize: 12, color: deltaColor, marginLeft: 6 }}>
+              {delta === 0
+                ? '—'
+                : `${delta > 0 ? '↑' : '↓'}${miniFmt(Math.abs(delta), metric.dec)}`}
+            </span>
+          )}
+        </span>
+      </div>
+      <ReactECharts option={option} style={{ height: 84 }} notMerge />
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          fontSize: 11,
+          color: '#bfbfbf',
+          marginTop: -4,
+        }}
+      >
+        <span>{dates[0] || ''}</span>
+        <span>{dates[dates.length - 1] || ''}</span>
+      </div>
+    </div>
+  )
+}
+
+/** 近期情绪趋势网格：大屏 4 列 / 中屏 2 列 / 手机 1 列
+ *  第二行为主线题材涨停家数（最多 3 条主线），数据来自当日快照而非趋势接口 */
+function MiniTrendGrid({ data, loading, mainLines, days = 10 }) {
+  const items = data?.items || []
+  const lines = (mainLines || [])
+    .filter((m) => (m.seq || []).length >= 2)
+    .slice(0, 3)
+    .map((m) => ({ name: m.name, seq: (m.seq || []).slice(-days) }))
+  return (
+    <Spin spinning={!!loading}>
+      {items.length ? (
+        <>
+          <Row gutter={[10, 10]}>
+            {MINI_TRENDS.map((m) => (
+              <Col key={m.key} xs={24} sm={12} lg={6}>
+                <MiniTrendCell metric={m} items={items} />
+              </Col>
+            ))}
+          </Row>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#8c8c8c' }}>
+            <Space size={12} wrap>
+              <span>
+                共 {items.length} 个交易日（{items[0]?.date} ~ {items[items.length - 1]?.date}）
+              </span>
+              {data?.filled ? <span>其中 {data.filled} 日由东财实时池回补</span> : null}
+              {data?.missing_dates?.length ? (
+                <span style={{ color: '#d46b08' }}>
+                  {data.missing_dates.length} 个交易日暂无数据（需执行「历史数据重建」）
+                </span>
+              ) : null}
+            </Space>
+          </div>
+          {lines.length ? (
+            <>
+              <Divider orientation="left" style={{ margin: '14px 0 8px' }}>
+                <Text strong style={{ fontSize: 13 }}>
+                  主线题材涨停家数
+                </Text>
+                <Hint k="trend_concept_zt" />
+                <Text type="secondary" style={{ fontSize: 12, fontWeight: 400, marginLeft: 6 }}>
+                  近 {lines[0].seq.length} 日（取当日主线题材前 {lines.length} 条）
+                </Text>
+              </Divider>
+              <Row gutter={[10, 10]}>
+                {lines.map((m, i) => (
+                  <Col key={m.name} xs={24} sm={12} lg={6}>
+                    <MiniTrendCell metric={conceptMiniMetric(m.name, i)} items={m.seq} />
+                  </Col>
+                ))}
+              </Row>
+            </>
+          ) : null}
+        </>
+      ) : (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              该日期之前还没有足够的历史快照，执行「历史数据重建」后即可查看
+            </Text>
+          }
+        />
+      )}
+    </Spin>
+  )
+}
+
 /** 概念板块情绪周期（V1.009.1）：板块全景 + 主线题材周期阶段 + 涨停贡献榜 + 涨跌幅榜 */
 function ConceptEmotion({ concept }) {
   const c = concept || {}
@@ -579,27 +871,8 @@ function ConceptEmotion({ concept }) {
       平淡: 'default',
     })[s] || 'default'
 
-  // 主线题材涨停家数走势（取有历史序列的前 3 条主线）
-  const chartLines = (c.main_lines || []).filter((m) => (m.seq || []).length >= 2).slice(0, 3)
-  const trendOption = chartLines.length
-    ? {
-        tooltip: { trigger: 'axis' },
-        legend: { data: chartLines.map((m) => m.name), top: 0, textStyle: { fontSize: 11 } },
-        grid: { left: 44, right: 16, top: 34, bottom: 24 },
-        xAxis: {
-          type: 'category',
-          data: (chartLines[0].seq || []).map((x) => String(x.date || '').slice(5)),
-        },
-        yAxis: { type: 'value', name: '涨停家数', splitLine: { lineStyle: { type: 'dashed' } } },
-        series: chartLines.map((m) => ({
-          name: m.name,
-          type: 'line',
-          smooth: true,
-          symbolSize: 5,
-          data: (m.seq || []).map((x) => x.zt ?? 0),
-        })),
-      }
-    : null
+  // 主线题材涨停家数走势已移到页面顶部「近期情绪趋势」卡片的第二行（V1.009.3）：
+  // 原来是本卡底部一张全宽大图，横向浪费空间，缩成小图后与情绪指标并排更好比较
 
   return (
     <>
@@ -831,16 +1104,6 @@ function ConceptEmotion({ concept }) {
         </Col>
       </Row>
 
-      {trendOption && (
-        <>
-          <Divider orientation="left" style={{ margin: '12px 0 8px' }}>
-            <Text strong style={{ fontSize: 13 }}>
-              主线题材涨停家数走势（近 10 日）
-            </Text>
-          </Divider>
-          <ReactECharts option={trendOption} style={{ height: 220 }} notMerge />
-        </>
-      )}
     </>
   )
 }
@@ -1249,6 +1512,11 @@ export default function DailyReview() {
   const [trendLoading, setTrendLoading] = useState(false)
   const [trendDays, setTrendDays] = useState(20)
 
+  // 近期情绪趋势小图（V1.009.3）：随所选日期自动加载，不需要手动点击
+  const [miniTrend, setMiniTrend] = useState(null)
+  const [miniLoading, setMiniLoading] = useState(false)
+  const [miniDays, setMiniDays] = useState(10)
+
   // 快照来源与历史重建（V1.009.1）
   const [snapLoading, setSnapLoading] = useState(false)
   const [snapSource, setSnapSource] = useState('')   // cache / fresh
@@ -1260,6 +1528,25 @@ export default function DailyReview() {
 
   const dateStr = date.format('YYYY-MM-DD')
   const draftKey = `daily_review:${dateStr}`
+
+  // 近期情绪趋势：以当前所选交易日为终点，自动拉取近 N 个交易日（独立请求，不阻塞主数据）
+  useEffect(() => {
+    let alive = true
+    setMiniLoading(true)
+    getDailyTrend(dateStr, miniDays)
+      .then((d) => {
+        if (alive) setMiniTrend(d)
+      })
+      .catch(() => {
+        if (alive) setMiniTrend(null)
+      })
+      .finally(() => {
+        if (alive) setMiniLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [dateStr, miniDays])
 
   // 草稿缓存：手写内容防丢（切换日期 / 误关页面都能恢复）
   const draft = useDraft(draftKey, {
@@ -1621,7 +1908,8 @@ export default function DailyReview() {
         series: [
           line('涨停家数', items.map((x) => x.limit_up), RED),
           line('炸板家数', items.map((x) => x.broken), '#1677ff'),
-          line('涨停总数', items.map((x) => x.limit_up + x.broken), '#52a550'),
+          // 「涨停总数（涨停 + 炸板）」已按用户要求去掉：与涨停/炸板两条线信息重复，
+          // 且三条线里两条是它的加数，视觉上互相干扰
           line('跌停家数', items.map((x) => x.limit_down), GREEN),
         ],
       },
@@ -1643,6 +1931,41 @@ export default function DailyReview() {
         ...base,
         yAxis: { ...base.yAxis, name: '板', nameTextStyle: { fontSize: 10 } },
         series: [line('最高连板', items.map((x) => x.max_lbc), '#722ed1')],
+      },
+      // 首板 / 连板：两条线之和恒等于「涨停家数」，看的是涨停的内部结构 ——
+      // 连板萎缩而首板顶上 = 存量接力断了、靠新面孔维持；两者同时萎缩 = 情绪整体退潮
+      structure: {
+        ...base,
+        yAxis: { ...base.yAxis, name: '家数', nameTextStyle: { fontSize: 10 } },
+        series: [
+          line('首板家数', items.map((x) => x.first_board), '#d9363e'),
+          line('连板家数', items.map((x) => x.multi_board), '#722ed1'),
+        ],
+      },
+      // 昨涨停股今日表现：平均涨幅看「赚钱效应强弱」，晋级率看「接力意愿」。
+      // 两者量纲差一个数量级（涨幅 ±5%、晋级率 0~50%），必须分双 Y 轴，否则平均涨幅会被压平
+      prevlu: {
+        ...base,
+        yAxis: [
+          {
+            ...base.yAxis,
+            name: '平均涨幅%',
+            nameTextStyle: { fontSize: 10 },
+            axisLabel: { fontSize: 10, formatter: '{value}%' },
+          },
+          {
+            ...base.yAxis,
+            name: '晋级率%',
+            nameTextStyle: { fontSize: 10 },
+            position: 'right',
+            splitLine: { show: false },
+            axisLabel: { fontSize: 10, formatter: '{value}%' },
+          },
+        ],
+        series: [
+          line('平均涨幅', items.map((x) => x.prev_lu_avg), RED),
+          { ...line('晋级率', items.map((x) => x.prev_lu_rate), '#722ed1'), yAxisIndex: 1 },
+        ],
       },
     }
   }, [trendData])
@@ -1821,6 +2144,51 @@ export default function DailyReview() {
       >
         {snap && (
           <>
+            {/* 近期情绪趋势（V1.009.3）：把核心情绪指标拉成时间序列，先看"变化方向"再看单日数据 */}
+            <Card
+              size="small"
+              style={{ marginBottom: 12 }}
+              title={
+                <Space size={4}>
+                  <LineChartOutlined />
+                  <span>近期情绪趋势</span>
+                  <Hint k="trend_mini" />
+                  <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
+                    近 {miniDays} 个交易日
+                  </Text>
+                </Space>
+              }
+              extra={
+                <Space size={8}>
+                  {[5, 10, 20].map((d) => (
+                    <Button
+                      key={d}
+                      size="small"
+                      type={miniDays === d ? 'primary' : 'default'}
+                      onClick={() => setMiniDays(d)}
+                    >
+                      {d} 日
+                    </Button>
+                  ))}
+                  <Button
+                    size="small"
+                    icon={<LineChartOutlined />}
+                    onClick={() => openTrend(miniDays)}
+                  >
+                    放大查看
+                  </Button>
+                </Space>
+              }
+              bodyStyle={{ padding: 12 }}
+            >
+              <MiniTrendGrid
+                data={miniTrend}
+                loading={miniLoading}
+                mainLines={snap?.concept?.main_lines}
+                days={miniDays}
+              />
+            </Card>
+
             {/* 指数 + 情绪指标（两卡等高、横向对齐）
                 注：alignItems 同时写在内联 style 里 —— antd 的 align 是运行时拼 class 名，
                 若对应 CSS 未注入则不生效，内联可确保 Col 被拉伸、Card 的 height:100% 才拿得到高度 */}
@@ -1898,7 +2266,11 @@ export default function DailyReview() {
                           </span>
                         }
                         value={fmtCount(e.limit_up)}
-                        suffix={<span style={TXT_L3_DIM}>/{fmtCount(e.limit_up_ex_st)}</span>}
+                        suffix={
+                          e.limit_up_inc_st == null ? null : (
+                            <span style={TXT_L3_DIM}>/{fmtCount(e.limit_up_inc_st)}</span>
+                          )
+                        }
                         valueStyle={{ ...TXT_L2, color: RED }}
                       />
                     </Col>
@@ -1911,7 +2283,11 @@ export default function DailyReview() {
                           </span>
                         }
                         value={fmtCount(e.limit_down)}
-                        suffix={<span style={TXT_L3_DIM}>/{fmtCount(e.limit_down_ex_st)}</span>}
+                        suffix={
+                          e.limit_down_inc_st == null ? null : (
+                            <span style={TXT_L3_DIM}>/{fmtCount(e.limit_down_inc_st)}</span>
+                          )
+                        }
                         valueStyle={{ ...TXT_L2, color: GREEN }}
                       />
                     </Col>
@@ -1932,11 +2308,16 @@ export default function DailyReview() {
                       <Statistic
                         title={
                           <span style={TXT_L1}>
-                            炸板家数
+                            炸板家数（剔ST）
                             <Hint k="broken" />
                           </span>
                         }
                         value={fmtCount(e.broken)}
+                        suffix={
+                          e.broken_inc_st == null ? null : (
+                            <span style={TXT_L3_DIM}>/{fmtCount(e.broken_inc_st)}</span>
+                          )
+                        }
                         valueStyle={{ ...TXT_L2 }}
                       />
                     </Col>
@@ -2345,8 +2726,14 @@ export default function DailyReview() {
               <Card size="small" title="炸板金额率-炸板率分析图" style={{ marginBottom: 10 }}>
                 <ReactECharts option={trendOptions.rate} style={{ height: 240 }} notMerge />
               </Card>
-              <Card size="small" title="连板高度分析图">
+              <Card size="small" title="首板-连板家数分析图" style={{ marginBottom: 10 }}>
+                <ReactECharts option={trendOptions.structure} style={{ height: 240 }} notMerge />
+              </Card>
+              <Card size="small" title="连板高度分析图" style={{ marginBottom: 10 }}>
                 <ReactECharts option={trendOptions.ladder} style={{ height: 220 }} notMerge />
+              </Card>
+              <Card size="small" title="昨日涨停股今日表现分析图">
+                <ReactECharts option={trendOptions.prevlu} style={{ height: 240 }} notMerge />
               </Card>
             </>
           ) : (

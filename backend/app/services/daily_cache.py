@@ -467,6 +467,11 @@ def _trend_item(date_str: str, snap: dict, kind: str = "") -> dict:
 
     字段与 `daily_market.collect_trend` 的返回严格一一对应（前端直接消费），
     炸板率/炸板金额率的分母都含炸板自身，与当日看板口径一致。
+
+    V1.009.3 起补充「情绪结构」字段（首板/连板家数、昨日涨停股今日表现、
+    上涨家数占比、两市成交额），供页面上的近期情绪趋势小图使用。
+    ⚠️ 取不到与真为 0 必须区分：字段缺失时返回 None（图上断点），不要填 0，
+    否则历史残缺快照（partial）会在图里画出一根假的下探线。
     """
     zt = snap.get("limit_up") or {}
     zb = snap.get("broken") or {}
@@ -475,6 +480,45 @@ def _trend_item(date_str: str, snap: dict, kind: str = "") -> dict:
     zb_c = int(zb.get("count") or 0)
     zt_a = float(zt.get("amount") or 0)
     zb_a = float(zb.get("amount") or 0)
+
+    # ---- 首板 / 连板家数：由涨停池个股的 lbc（连板数）分档统计 ----
+    lbc_list = [int(x.get("lbc") or 1) for x in (zt.get("stocks") or []) if isinstance(x, dict)]
+    if zt_c == 0:
+        first_board = multi_board = 0
+    elif lbc_list:
+        first_board = sum(1 for n in lbc_list if n <= 1)
+        multi_board = sum(1 for n in lbc_list if n >= 2)
+    else:
+        # 有涨停家数却没有个股明细 —— 残缺快照，标为不可得
+        first_board = multi_board = None
+
+    # ---- 昨日涨停股今日表现：情绪承接的核心指标 ----
+    pl = snap.get("prev_limit_up") or {}
+    pl_valid = int(pl.get("valid") or 0)
+    if pl_valid > 0:
+        prev_lu_avg = pl.get("avg_pct")
+        prev_lu_again = int(pl.get("limit_up_again") or 0)
+        prev_lu_up = int(pl.get("up_count") or 0)
+        prev_lu_rate = round(prev_lu_again / pl_valid * 100, 2)
+    else:
+        prev_lu_avg = prev_lu_again = prev_lu_up = prev_lu_rate = None
+
+    # ---- 市场宽度：上涨家数占比 ----
+    # ⚠️ breadth 的上涨/下跌家数是「四档区间家数之和」，**不含涨跌停**（涨跌停单列），
+    #    平盘/停牌也单列。所以占比必须把涨停并进分子、把涨跌停与平盘都并进分母，
+    #    才是「全部有行情品种里红盘的比例」，也才能与「涨跌家数分布」表对上账。
+    b = snap.get("breadth") or {}
+    has_breadth = bool(b.get("total"))
+    up_c = int(b.get("up_count") or 0)
+    down_c = int(b.get("down_count") or 0)
+    flat_c = int(b.get("flat") or 0)
+    dt_c = int(dtp.get("count") or 0)
+    denom = up_c + down_c + flat_c + zt_c + dt_c
+    if has_breadth and denom:
+        up_ratio = round((up_c + zt_c) / denom * 100, 2)
+    else:
+        up_ratio = None
+
     return {
         "date": date_str,
         "limit_up": zt_c,
@@ -485,6 +529,21 @@ def _trend_item(date_str: str, snap: dict, kind: str = "") -> dict:
         "broken_rate": round(zb_c / (zt_c + zb_c) * 100, 2) if (zt_c + zb_c) else None,
         "broken_amount_rate": (round(zb_a / (zt_a + zb_a) * 100, 2) if (zt_a + zb_a) else None),
         "max_lbc": int(zt.get("max_lbc") or 0),
+        # --- 情绪结构（V1.009.3）---
+        "first_board": first_board,
+        "multi_board": multi_board,
+        "prev_lu_avg": prev_lu_avg,
+        "prev_lu_again": prev_lu_again,
+        "prev_lu_up": prev_lu_up,
+        "prev_lu_rate": prev_lu_rate,
+        "prev_lu_valid": pl_valid or None,
+        "up_count": up_c if has_breadth else None,
+        "down_count": down_c if has_breadth else None,
+        "up_ratio": up_ratio,
+        "total_amount": (
+            float(b.get("total_amount") or 0) if has_breadth else None
+        ),
+        "dt_amount": float(dtp.get("amount") or 0) if dtp.get("count") else None,
         "source": kind or "cache",
     }
 

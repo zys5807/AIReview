@@ -93,7 +93,8 @@ def _snapshot_page(pn: int):
     """全市场快照单页（含重试 + 抖动；东财对高并发敏感）"""
     q = urllib.parse.urlencode({
         "pn": pn, "pz": _SNAPSHOT_PAGE, "po": 1, "np": 1, "fltt": 2, "invt": 2,
-        "fid": "f3", "fs": _FS_ALL_A, "fields": "f2,f3,f6,f12,f14",
+        # f15=最高价、f18=昨收 —— 供 ST 股涨跌停判定（含 ST 口径）使用
+        "fid": "f3", "fs": _FS_ALL_A, "fields": "f2,f3,f6,f12,f14,f15,f18",
     })
     url = _SNAPSHOT_BASE + q
     for attempt in range(3):
@@ -128,15 +129,69 @@ def _market_snapshot():
         if not code:
             continue
         pct = r.get("f3")
+        def _num(v):
+            return v if isinstance(v, (int, float)) else None
         out.append({
             "code": code,
             "name": (r.get("f14") or "").replace(" ", ""),
-            "price": r.get("f2") if isinstance(r.get("f2"), (int, float)) else None,
+            "price": _num(r.get("f2")),
             "pct": pct if isinstance(pct, (int, float)) else None,
             "amount": r.get("f6") if isinstance(r.get("f6"), (int, float)) else 0.0,
+            "high": _num(r.get("f15")),    # 当日最高价
+            "prev": _num(r.get("f18")),    # 昨收
         })
     note = "" if len(out) >= total * 0.95 else "部分个股快照缺失（共 %d 只，取到 %d 只）" % (total, len(out))
     return out, note
+
+
+def _limit_board_from_snapshot(rows: list[dict]) -> dict:
+    """全市场快照 → ST/*ST 股的涨停 / 跌停 / 炸板家数（「含 ST」口径专用）
+
+    为什么需要它：东财的涨停池 / 跌停池 / 炸板池**都不收录 ST 股**（实测池内 ST 恒为 0），
+    所以主口径（剔 ST）直接取池子总数即可；但「含 ST」口径东财没有现成字段，
+    只能自己从全市场快照算 —— 快照本来就要拉（算涨跌家数分布），因此零额外开销。
+
+    档位用 _limit_rate_for 按当日最高价反推，可覆盖 ST 摘帽日 5%→10% 的切换；
+    容差必须用 _LIMIT_TOL(0.005)：放宽到 0.011 会把 ST龙大 2.60→2.48（跌停价 2.47）
+    这种「差 1 分」的误判成跌停（实测踩到）。
+
+    返回 {"limit_up", "limit_down", "broken"}，均为 ST 股口径。
+    """
+    zt = dt = zb = 0
+    for r in rows:
+        name = r.get("name") or ""
+        if not _is_st(name):
+            continue
+        code = str(r.get("code") or "")
+        close, prev, high = r.get("price"), r.get("prev"), r.get("high")
+        if not isinstance(prev, (int, float)) or prev <= 0:
+            continue
+        if not isinstance(close, (int, float)):
+            continue
+        px = high if isinstance(high, (int, float)) else close
+        rate = _limit_rate_for(prev, code, name, px)
+        rates = [rate] if rate else _limit_rates(code, name)
+        hit = None
+        for rr in rates:
+            if abs(close - round(prev * (1 + rr), 2)) < _LIMIT_TOL:
+                hit = "up"
+                break
+            if abs(close - round(prev * (1 - rr), 2)) < _LIMIT_TOL:
+                hit = "down"
+                break
+        if hit == "up":
+            zt += 1
+            continue
+        if hit == "down":
+            dt += 1
+            continue
+        # 炸板：最高价触及涨停价、收盘未封住
+        for rr in rates:
+            lim = round(prev * (1 + rr), 2)
+            if isinstance(high, (int, float)) and high >= lim - _LIMIT_TOL and close < lim - _LIMIT_TOL:
+                zb += 1
+                break
+    return {"limit_up": zt, "limit_down": dt, "broken": zb}
 
 
 def _recent_trade_days(end_str: str, n: int) -> list[str]:
@@ -285,10 +340,12 @@ def _zt_stocks(tc: int, pool: list) -> dict:
         d["amount"] += s["amount"]
     industries = sorted(ind.values(), key=lambda x: -x["count"])
 
+    _n = tc or len(stocks)
     return {
-        "count": tc or len(stocks),
-        "count_ex_st": sum(1 for s in stocks if not s["is_st"]),
-        "st_count": sum(1 for s in stocks if s["is_st"]),
+        "count": _n,           # 主口径：剔 ST（东财池本身不收录 ST）
+        "count_inc_st": _n,    # 含 ST：待全市场快照补算后覆盖
+        "count_ex_st": _n,     # 兼容旧字段，与 count 同义
+        "st_count": 0,         # 待全市场快照补算后覆盖
         "amount": sum(s["amount"] for s in stocks),
         "max_lbc": max([s["lbc"] for s in stocks] or [0]),
         "stocks": stocks,
@@ -315,10 +372,12 @@ def _dt_stocks(tc: int, pool: list) -> dict:
             "is_st": _is_st(name),
         })
     stocks.sort(key=lambda x: x["pct"])
+    _n = tc or len(stocks)
     return {
-        "count": tc or len(stocks),
-        "count_ex_st": sum(1 for s in stocks if not s["is_st"]),
-        "st_count": sum(1 for s in stocks if s["is_st"]),
+        "count": _n,           # 主口径：剔 ST
+        "count_inc_st": _n,    # 含 ST：待全市场快照补算后覆盖
+        "count_ex_st": _n,     # 兼容旧字段
+        "st_count": 0,
         "amount": sum(s["amount"] for s in stocks),
         "stocks": stocks,
     }
@@ -345,8 +404,12 @@ def _zb_stocks(tc: int, pool: list) -> dict:
             "is_st": _is_st(name),
         })
     stocks.sort(key=lambda x: -x["amount"])
+    _n = tc or len(stocks)
     return {
-        "count": tc or len(stocks),
+        "count": _n,           # 主口径：剔 ST
+        "count_inc_st": _n,    # 含 ST：待全市场快照补算后覆盖
+        "count_ex_st": _n,     # 兼容旧字段
+        "st_count": 0,
         "amount": sum(s["amount"] for s in stocks),
         "stocks": stocks,
     }
@@ -402,7 +465,7 @@ def _prev_limit_up_perf(prev_date: str, today_rows: list[dict], today_zt: set,
     """
     empty = {"prev_date": prev_date, "count": 0, "valid": 0, "items": [],
              "avg_pct": None, "up_count": 0, "down_count": 0,
-             "flat_count": 0, "limit_up_again": 0, "source": ""}
+             "flat_count": 0, "limit_up_again": 0, "source": "", "scope": "ex_st"}
     ptc, ppool = _pool(_API_ZT, prev_date, "fbt:asc")
     if not ppool:
         return empty
@@ -450,6 +513,7 @@ def _prev_limit_up_perf(prev_date: str, today_rows: list[dict], today_zt: set,
         "limit_up_again": sum(1 for x in items if x["again_limit_up"]),
         "items": items,
         "source": source,
+        "scope": "ex_st",       # 主口径：已剔除 ST/*ST（东财池本身不含 ST）
     }
 
 
@@ -1764,6 +1828,8 @@ def _blank_breadth() -> dict:
         "down_0_3": 0, "down_3_5": 0, "down_5_7": 0, "down_gt7": 0,
         "flat": 0, "up_count": 0, "down_count": 0, "total": 0,
         "total_amount": 0.0, "limit_up": 0, "limit_down": 0, "limit_up_ex_st": 0,
+        # 主口径 = 剔 ST（limit_up / limit_down 均已剔 ST）；下面两个是同日的含 ST 口径
+        "limit_up_inc_st": 0, "limit_down_inc_st": 0,
     }
 
 
@@ -1978,6 +2044,7 @@ def _rebuild_prev_perf(prev_zt: list, pct_close: dict, today: str,
                        limit_flags: dict | None = None) -> dict:
     """由日K口径重建"昨日涨停股今日表现"
 
+    口径：prev_zt 必须只含非 ST 股（调用方负责过滤），与 limit_up.count 主口径一致。
     limit_flags: {code: {date: 1/-1}}，为本文件的精确涨停价判定结果；缺失时回退阈值判定。
     """
     flags = limit_flags or {}
@@ -2003,6 +2070,7 @@ def _rebuild_prev_perf(prev_zt: list, pct_close: dict, today: str,
         "flat_count": sum(1 for v in vals if v == 0),
         "limit_up_again": sum(1 for x in items if x["again_limit_up"]),
         "items": items, "source": "rebuild",
+        "scope": "ex_st",       # 主口径：已剔除 ST/*ST
     }
 
 
@@ -2165,10 +2233,19 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
             b = breadth[d]
             b["total_amount"] += amt
             f = flags.get(d, 0)
+            # 主口径 = 剔除 ST/*ST（与东财涨停池一致）。ST 股涨跌停不计入「涨跌停家数」，
+            # 但降级为普通涨跌进入下面的分布档位 —— live 路径（东财池剔 ST + 快照分档）
+            # 就是这个行为，两条路径必须一致，否则同一张趋势图上相邻两天不可比。
+            if f == 1:
+                b["limit_up_inc_st"] += 1
+                if is_st:
+                    f = 0
+            elif f == -1:
+                b["limit_down_inc_st"] += 1
+                if is_st:
+                    f = 0
             if f == 1:
                 b["limit_up"] += 1
-                if not is_st:
-                    b["limit_up_ex_st"] += 1
                 zt_items[d].append({
                     "code": code, "name": nm, "price": round(close, 3),
                     "pct": round(p, 2), "amount": round(amt, 0),
@@ -2215,6 +2292,7 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
                 })
 
     for b in breadth.values():
+        b["limit_up_ex_st"] = b["limit_up"]   # 兼容旧字段：与 limit_up 同义（均已剔 ST）
         b["up_count"] = b["up_gt7"] + b["up_5_7"] + b["up_3_5"] + b["up_0_3"]
         b["down_count"] = b["down_0_3"] + b["down_3_5"] + b["down_5_7"] + b["down_gt7"]
         b["total"] = b["up_count"] + b["down_count"] + b["flat"]
@@ -2303,13 +2381,18 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
             hot_for_day = {"available": False,
                            "note": ("本地人气排名缓存为空（东财人气榜个股序列尚未抓取）；"
                                     "候选股抓取完成后即可离线组装该日热度榜")}
+        # 统一口径 = 剔 ST：zt_items / dt_items 在上面的分档里已只收非 ST，
+        # 故 count 即剔 ST 家数；count_inc_st 取广度里记录的含 ST 总数，供与东财首页对账。
         zt_list = sorted(zt_items[d], key=lambda x: (-x["lbc"], -(x["pct"] or 0)))
         dt_list = sorted(dt_items[d], key=lambda x: (x["pct"] or 0))
         max_lbc = max([s["lbc"] for s in zt_list] or [0])
+        zt_inc = int(breadth[d].get("limit_up_inc_st") or 0)
+        dt_inc = int(breadth[d].get("limit_down_inc_st") or 0)
         zt_struct = {
-            "count": len(zt_list),
-            "count_ex_st": sum(1 for s in zt_list if not s["is_st"]),
-            "st_count": sum(1 for s in zt_list if s["is_st"]),
+            "count": len(zt_list),                 # 主口径：剔 ST
+            "count_inc_st": zt_inc,                # 含 ST（对账用）
+            "count_ex_st": len(zt_list),           # 兼容旧字段，与 count 同义
+            "st_count": max(0, zt_inc - len(zt_list)),
             "amount": sum(s["amount"] for s in zt_list),
             "max_lbc": max_lbc,
             "stocks": zt_list,
@@ -2318,22 +2401,32 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
             "source": "kline",   # 由个股日K自建（东财涨停池超窗）
         }
         dt_struct = {
-            "count": len(dt_list),
-            "count_ex_st": sum(1 for s in dt_list if not s["is_st"]),
-            "st_count": sum(1 for s in dt_list if s["is_st"]),
+            "count": len(dt_list),                 # 主口径：剔 ST
+            "count_inc_st": dt_inc,
+            "count_ex_st": len(dt_list),
+            "st_count": max(0, dt_inc - len(dt_list)),
             "amount": sum(s["amount"] for s in dt_list),
             "stocks": dt_list,
             "source": "kline",
         }
-        zb_list = sorted(zb_items.get(d) or [], key=lambda x: -(x["amount"] or 0))
+        # 炸板：zb_items 收全部（含 ST），组装时再按主口径过滤
+        zb_all = list(zb_items.get(d) or [])
+        zb_list = sorted([x for x in zb_all if not x["is_st"]],
+                         key=lambda x: -(x["amount"] or 0))
         zb_struct = {
-            "count": len(zb_list),
-            "count_ex_st": sum(1 for s in zb_list if not s["is_st"]),
+            "count": len(zb_list),                 # 主口径：剔 ST
+            "count_inc_st": len(zb_all),
+            "count_ex_st": len(zb_list),
+            "st_count": len(zb_all) - len(zb_list),
             "amount": sum(s["amount"] for s in zb_list),
             "stocks": zb_list,
             "source": "kline",  # 由个股日K自建（东财炸板池超窗）
         }
-        pp = _rebuild_prev_perf(zt_items.get(pd_) or [], pct_close, d, limit_flags)
+        # 昨日涨停名单必须是「剔 ST」口径：zt_items 现在已只收非 ST（见上方分档），
+        # 这里再显式过滤一次，防止未来重构把 ST 放回来导致 prev_limit_up 与
+        # limit_up.count 口径不一致（历史事故：09-10 的 49 vs limit_up.count 48）。
+        _pzt = [x for x in (zt_items.get(pd_) or []) if not x.get("is_st")]
+        pp = _rebuild_prev_perf(_pzt, pct_close, d, limit_flags)
         pp["prev_date"] = pd_
         indices = []
         for _c, nm in INDEX_LIST:
@@ -2387,11 +2480,14 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
             "amount_chg": amt_chg,
             "coverage": {"stocks": cov, "universe": len(uni)},
             "emotion": {
-                "limit_up": len(zt_list),
-                "limit_up_ex_st": zt_struct["count_ex_st"],
-                "limit_down": len(dt_list),
-                "limit_down_ex_st": dt_struct["count_ex_st"],
-                "broken": len(zb_list),
+                "limit_up": zt_struct["count"],              # 剔 ST（主口径）
+                "limit_up_inc_st": zt_struct["count_inc_st"],
+                "limit_up_ex_st": zt_struct["count"],        # 兼容旧字段
+                "limit_down": dt_struct["count"],
+                "limit_down_inc_st": dt_struct["count_inc_st"],
+                "limit_down_ex_st": dt_struct["count"],
+                "broken": zb_struct["count"],
+                "broken_inc_st": zb_struct["count_inc_st"],
                 "broken_rate": (
                     round(len(zb_list) / (len(zt_list) + len(zb_list)) * 100, 2)
                     if (len(zt_list) + len(zb_list)) else None),
@@ -2489,6 +2585,14 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
         _kb = broken_from_klines(klines, date_str, names_map)
         if _kb.get("count"):
             _kb["source"] = "kline"
+            # 主口径统一为剔 ST：日K自建口径本身含 ST，这里剔掉并把含 ST 数另存
+            _kb_all = list(_kb.get("stocks") or [])
+            _kb["count_inc_st"] = len(_kb_all)
+            _kb["stocks"] = [x for x in _kb_all if not x.get("is_st")]
+            _kb["count"] = len(_kb["stocks"])
+            _kb["count_ex_st"] = _kb["count"]
+            _kb["st_count"] = len(_kb_all) - _kb["count"]
+            _kb["amount"] = sum(x.get("amount") or 0 for x in _kb["stocks"])
             zb = _kb
             notes.append(
                 "炸板数据：东财炸板池仅覆盖最近约 15 个交易日，该日已超出回溯窗口，"
@@ -2511,6 +2615,18 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
         rows, snote = _market_snapshot()
         if snote:
             notes.append(snote)
+        # 主口径 = 剔 ST（东财池不收录 ST）。「含 ST」东财没有现成字段，只能从快照自算 ——
+        # 快照本来就要拉（算涨跌家数分布），所以零额外开销。日K兜底的炸板口径本身含 ST，
+        # 已在上面改成剔 ST，此处跳过。
+        if rows:
+            _slc = _limit_board_from_snapshot(rows)
+            for _k, _stt in (("limit_up", zt), ("limit_down", dt)):
+                _base = int(_stt.get("count") or 0)
+                _stt["st_count"] = _slc[_k]
+                _stt["count_inc_st"] = _base + _slc[_k]
+            if zb.get("source") != "kline":
+                zb["st_count"] = _slc["broken"]
+                zb["count_inc_st"] = int(zb.get("count") or 0) + _slc["broken"]
     elif ctx_breadth:
         # 已做历史重建：涨跌分布 / 成交额来自全市场个股日K聚合，历史日期同样完整
         notes.append(
@@ -2584,11 +2700,14 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
     zt_cnt = zt["count"]
     zb_cnt = zb["count"]
     emotion = {
-        "limit_up": zt_cnt,
-        "limit_up_ex_st": zt["count_ex_st"],
+        "limit_up": zt_cnt,                                   # 主口径：剔 ST
+        "limit_up_inc_st": zt.get("count_inc_st"),            # 含 ST（对账用）
+        "limit_up_ex_st": zt["count_ex_st"],                  # 兼容旧字段，同 limit_up
         "limit_down": dt["count"],
+        "limit_down_inc_st": dt.get("count_inc_st"),
         "limit_down_ex_st": dt["count_ex_st"],
         "broken": zb_cnt,
+        "broken_inc_st": zb.get("count_inc_st"),
         "broken_rate": round(zb_cnt / (zt_cnt + zb_cnt) * 100, 2) if (zt_cnt + zb_cnt) else None,
         "broken_amount_rate": (
             round(zb["amount"] / (zt["amount"] + zb["amount"]) * 100, 2)
@@ -2631,14 +2750,24 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
     if klines and prev_day:
         t_k = _dx.turnover_from_klines(klines, date_str)
         p_k = _dx.turnover_from_klines(klines, prev_day)
+        snap_amt = breadth.get("total_amount") or 0
         if t_k and p_k:
             # 用快照值做一致性校验：若日K当日覆盖明显不足（<70%），改用快照当日值
-            snap_amt = breadth.get("total_amount") or 0
             if snap_amt and t_k < snap_amt * 0.7:
                 amt_chg = _dx.amount_change(snap_amt, p_k, prev_day, "snapshot", "kline")
             else:
                 amt_chg = _dx.amount_change(t_k, p_k, prev_day, "kline", "kline")
+        elif p_k and snap_amt and is_trade_day:
+            # 日K缓存里还没有「当日」的 bar（个股日K每晚刷新一次，盘后刚打开页面时常见）
+            # → 当日退化为实时快照成交额，昨日沿用日K聚合值，保证环比不空。
+            # 空值分支只在 t_k 缺失时走：一旦日K补齐当日 bar，自动回到上面的同口径比较。
+            # 非交易日（is_trade_day=False）不算 —— 此时快照拿到的是上一交易日的收盘值，
+            # today 与 prev 会指向同一天，算出来是个假环比。
+            amt_chg = _dx.amount_change(snap_amt, p_k, prev_day, "snapshot", "kline")
+            notes.append("成交额环比：日K缓存无 %s 的当日bar，当日侧退化用实时快照" % date_str)
     if not amt_chg.get("available") and breadth.get("total_amount"):
+        # 前面连 prev 都拿不到（日K缓存缺上一交易日、或非交易日）→ 只把当日值挂上，
+        # available 保持 False，前端显示 '-' 而不是半个数。
         amt_chg["today"] = breadth.get("total_amount")
         amt_chg["today_source"] = "snapshot"
 
@@ -2703,13 +2832,24 @@ def collect_trend(end_str: str, days: int = 20) -> dict:
     def one(d: str) -> dict:
         zt_tc, zt_pool = _pool(_API_ZT, d, "fbt:asc")
         zb_tc, zb_pool = _pool(_API_ZB, d, "fbt:asc")
-        dt_tc, _ = _pool(_API_DT, d, "fund:asc")
+        dt_tc, dt_pool = _pool(_API_DT, d, "fund:asc")
         zt_amt = sum((i.get("amount") or 0) for i in zt_pool)
         zb_amt = sum((i.get("amount") or 0) for i in zb_pool)
-        max_lbc = max([int(i.get("lbc") or 1) for i in zt_pool] or [0])
+        dt_amt = sum((i.get("amount") or 0) for i in dt_pool)
+        lbc_list = [int(i.get("lbc") or 1) for i in zt_pool]
+        max_lbc = max(lbc_list or [0])
+        # 首板/连板分档（与 daily_cache._trend_item 同口径）
+        zt_n = zt_tc or len(zt_pool)
+        if zt_n == 0:
+            first_board = multi_board = 0
+        elif lbc_list:
+            first_board = sum(1 for n in lbc_list if n <= 1)
+            multi_board = sum(1 for n in lbc_list if n >= 2)
+        else:
+            first_board = multi_board = None
         return {
             "date": d,
-            "limit_up": zt_tc or len(zt_pool),
+            "limit_up": zt_n,
             "broken": zb_tc or len(zb_pool),
             "limit_down": dt_tc,
             "zt_amount": zt_amt,
@@ -2719,6 +2859,19 @@ def collect_trend(end_str: str, days: int = 20) -> dict:
                 round(zb_amt / (zt_amt + zb_amt) * 100, 2) if (zt_amt + zb_amt) else None
             ),
             "max_lbc": max_lbc,
+            # --- 情绪结构：池子里能算的照算，依赖全市场快照的留 None（取不到 ≠ 为 0）---
+            "first_board": first_board,
+            "multi_board": multi_board,
+            "prev_lu_avg": None,
+            "prev_lu_again": None,
+            "prev_lu_up": None,
+            "prev_lu_rate": None,
+            "prev_lu_valid": None,
+            "up_count": None,
+            "down_count": None,
+            "up_ratio": None,
+            "total_amount": None,
+            "dt_amount": dt_amt if dt_tc else None,
         }
 
     items: list[dict] = []
