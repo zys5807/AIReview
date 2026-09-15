@@ -1,7 +1,28 @@
 # Gitee 发布 V1.009.5 —— 手动操作指引
 
-> 生成于 2026-09-15。Gitee 的 API 与 HTTPS 写操作只认 personal access token（不认账号密码），
-> 所以本次仍由你手动发布。按下面 5 步走，约 2 分钟。
+> ## ⚠️ 本份指引已作废（2026-09-15）
+>
+> **V1.009.5 已于 2026-09-15 通过 API 用私人令牌自动发布完成**，
+> 页面：https://gitee.com/zys5807/AIReview/releases/tag/V1.009.5
+> （Release id `1144310`，附件 `AIReviewSystem-V1.009.5-清洁版.zip` 86,663,542 字节，
+> 正文 5225 字符与 Release Notes 逐字一致）
+>
+> **以后发 Gitee 走这条命令，不要再手动点：**
+>
+> ```bash
+> cd F:/AIwork/2026-08-21-18-01-35 && GITEE_TOKEN=<私人令牌> \
+>   ./backend/venv/Scripts/python.exe \
+>   .workbuddy/skills/aireview-release-pipeline/scripts/gitee_release.py V1.009.5
+> ```
+>
+> 脚本会建 tag → 建 Release → 传清洁版附件 → 回读 9 项自证，幂等可重跑。
+>
+> **下面这份步骤仍然保留**，用途只有一个：**令牌失效或过期、又急着发版时的手动兜底**。
+> （Gitee 的写操作只认私人令牌，不认账号密码 —— 令牌没了就只剩手动这条路。）
+
+---
+
+> 生成于 2026-09-15。按下面 5 步走，约 2 分钟。
 
 ---
 
