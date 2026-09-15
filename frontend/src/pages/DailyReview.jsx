@@ -449,14 +449,34 @@ const TIP = {
     s: '今日核心档 + 昨日全市场概念的涨幅/涨停家数/上涨家数/成分股数截面',
   },
   concept_stage: {
-    t: '周期阶段',
-    d: '「主线题材与周期阶段」表中所属阶段。有近 N 日序列时按序列判定，否则退化为「当日强度」口径。',
+    t: '周期阶段（情绪周期 · 板块级）',
+    d: '回答「这个板块现在处于情绪周期的哪一段」，据此决定进攻还是收手 —— 不是预测明天涨跌（明天是概率事件：今天启动，明天可能发酵、也可能直接退潮）。',
     f: [
-      '有序列（近 N 日板块涨跌幅与涨停家数）：高潮 = 今日涨停 ≥3 家且为区间峰值；退潮 = 前 1~2 日曾 ≥3 家涨停后今日转跌；发酵 = 连续有涨停；启动 = 近 3 日首次出现涨停；冰点 = 近 N 日无涨停且累计跌幅 ≤ −3%；其余为震荡',
-      '无序列（当日强度）：高潮 = 涨停 ≥5 家且板块 >2%；发酵 = 涨停 ≥3 家且板块 >0%；分歧 = 有涨停但板块 ≤0%；活跃 = 涨停 ≥1 家且板块 >0%；补涨 = 无涨停但板块 >1.5%；退潮 = 无涨停且板块 <−2%；其余为平淡',
-      '卡片右上角标签会标明用的是哪种判定口径',
+      '七态：潜伏 / 启动 / 发酵 / 高潮 / 分歧 / 退潮 + 冰点。判定是**状态机**不是强度轴 —— 活跃态（启动/发酵/高潮/分歧）只在活跃态之间演化，结构上不会出现「退潮 → 高潮」这种跳级',
+      '启动 = 近 10 日没有活跃过的新方向（涨停强度进全市场前 15%、扩散度 ≥55%、最高板 ≤2、涨停 ≥2 家）→ 可考虑建仓、仓位可略大，等走完整个周期到高潮离场。⚠️ 实测 42% 次日直接退潮（一日游真实分布），所以它是**观察信号，不是买入信号**',
+      '发酵 = 梯队成形（连板 ≥1 家，或涨停强度进前 20%）且扩散度 ≥50% → 走势最健康的介入区，持有为主',
+      '高潮 = 出现 ≥4 板高标，或涨停强度进前 3% 且扩散度 ≥70%、涨停 ≥5 家、连板 ≥1 家；且龙头（板块最高板）仍在创新高 → **持仓做好随时撤退的计划、分批止盈；空仓注意风险、不轻易追涨**',
+      '分歧 = 龙头首阴（最高板不再走高）＋ 炸板率比自己近 20 日均值高 0.25 以上、或断板 ≥2 只 → 减仓，只留最强龙头；空仓只做龙头低吸，放弃后排',
+      '退潮 = 明显转弱（跑输上证 0.8 个点以上、上涨家数占比 <40%、涨停 ≤1 家）→ 清仓离场，禁止抄底',
+      '冰点 = 无涨停 + 跑输上证 1 个点以上 + 上涨家数占比 <35%',
+      '潜伏（显示为「无周期」）= 未进入情绪周期。约占 68% —— 这是正常的：板块级情绪周期本就是稀疏事件（当天有涨停的板块 56%、有连板梯队仅 7.5%）。成分股 <20 只的板块一律不判周期（样本太小，占比会系统性高估）',
+      '⚠️ 两个反直觉但正确的点：① 高潮时**扩散度反而低于发酵**（0.60 < 0.72）—— 对应养家「高潮是龙头缩量加速板，资金集中在少数标的」，即「赚指数不赚钱」的量化形态；② **不要拿板块涨幅找高潮**，高潮的板块平均涨幅反而低于发酵（+1.21% vs +2.04%），标志是高度 + 梯队 + 溢价',
+      '八指标全部规模无关：涨停强度用贝叶斯收缩 z=(涨停+K·基准占比)/(成分股+K)、K=20；炸板率比的是该板块**自己的历史**而不是绝对阈值 —— 否则 995 只的板块会天天判「分歧」',
+      '悬停「周期阶段」标签可看八指标明细（连板梯队 / 赚钱效应 / 强度）',
     ],
-    s: '板块近 N 日序列（hist）+ 当日板块数据',
+    s: '板块近 20 日历史序列（涨停家数 / 连板家数 / 断板数 / 晋级率 / 接力溢价 / 炸板率 / 扩散度）+ 上证指数同期涨跌幅',
+  },
+  concept_phase_risk: {
+    t: '情绪周期风控清单',
+    d: '今日处于「高潮 / 分歧」的板块清单。这是阶段标签**最强**的用途 —— 它回答的不是「买什么」，而是「手上有的该不该减、空仓的该不该忍住别追」。',
+    f: [
+      '为什么单列而不并入主线表：风控要看的是**你持仓所在的板块**，而它常常不在今天的核心主线里',
+      '实测依据：「高潮」组次日跌超 3% 的概率 15.5%，是「发酵」的 2 倍、「退潮」的 6 倍，而且它是唯一均值为负的组 —— 阶段标签的价值在风险端，不在选股端',
+      '高潮：持仓做好随时撤退计划、分批止盈；空仓不轻易追涨。连续高潮时要盯**接力溢价**（实测第 2 天见顶 +5.24%、第 3 天回落到 +3.79%），止盈应在溢价见顶时启动，而不是等高度回落',
+      '分歧：减仓、只留最强龙头；空仓只做龙头低吸，放弃后排',
+      '清单按「高潮优先 → 最高板降序 → 涨幅降序」排列',
+    ],
+    s: '全部有效题材板块（非伪板块 且 成分股 ≥20 只）的当日阶段判定结果',
   },
   concept_roles: {
     t: '板块角色分层（龙头 / 中军 / 跟风 / 补涨）',
@@ -1080,19 +1100,53 @@ function ConceptEmotion({ concept, onOpenStock }) {
   const temp = c.temperature
   const tempColor =
     temp == null ? '#8c8c8c' : temp >= 65 ? RED : temp >= 45 ? '#d48806' : GREEN
+  // 情绪周期阶段配色（V1.009.7 六阶段 + 潜伏）。
+  // 按「可交易性」而不是按强弱排色：高潮/分歧是**风控信号**（红/蓝，最该看），
+  // 启动/发酵是可介入区（橙/火山），退潮/冰点/潜伏是「别碰」（绿/灰）。
+  // 「潜伏」占约 68% —— 板块级情绪周期本就是稀疏事件，灰色是正确表达，
+  // 不是为了好看而给的默认值。
   const stageColor = (s) =>
     ({
       高潮: 'red',
       发酵: 'volcano',
       启动: 'orange',
-      活跃: 'gold',
       分歧: 'blue',
-      补涨: 'cyan',
       退潮: 'green',
-      冰点: 'default',
-      震荡: 'default',
-      平淡: 'default',
+      冰点: 'cyan',
+      潜伏: 'default',
     })[s] || 'default'
+  // 潜伏显式显示为「无周期」，避免用户把灰色标签当成「没数据」
+  const stageLabel = (s) => (s === '潜伏' ? '无周期' : s)
+  // 八指标明细（悬停主线表「周期阶段」标签时显示）
+  const phaseDimsDetail = (r) => {
+    const d = r?.phase_dims
+    if (!d) return r?.reason || stageLabel(r?.stage) || '-'
+    const pct = (v, n = 2) => (v == null ? '-' : `${Number(v).toFixed(n)}%`)
+    const num = (v, n = 2) => (v == null ? '-' : Number(v).toFixed(n))
+    // ⚠️ `zt_r` / `up_r` 是**比率**（0~1），不是百分数 —— 必须 ×100 再拼 `%`。
+    // 实测踩过：直接套 pct() 会输出「涨停 3 家（0.10%）」「扩散度 0.63%」，
+    // 比真值小整 100 倍；而这两个数在 12px 的悬停浮层里肉眼极难看出来
+    // （是靠「抽 innerText + 20px 重绘」才读出来的，1 倍图上看是 10.0% 还是 0.10% 分不清）。
+    // 同层的 `prem`（接力溢价）与 `pct`（涨跌幅）本来就是百分数，不能混用同一个格式化函数。
+    const ratio = (v, n = 1) => (v == null ? '-' : `${(Number(v) * 100).toFixed(n)}%`)
+    return (
+      <div style={{ fontSize: 12, lineHeight: 1.9 }}>
+        <div>
+          <b>{stageLabel(r.stage)}</b>　{r.reason}
+        </div>
+        <div style={{ borderTop: '1px solid rgba(128,128,128,.35)', marginTop: 4, paddingTop: 4 }}>
+          连板梯队：最高板 <b>{d.lbc_max}</b> 板 · 连板 <b>{d.lbc_n}</b> 家 · 断板 <b>{d.brk_n}</b> 只
+        </div>
+        <div>
+          赚钱效应：晋级率 {num(d.promo)} · 接力溢价 {pct(d.prem)} · 炸板率{' '}
+          {num(d.zb_r)}（自身均值 {num(d.zb_base)}）
+        </div>
+        <div>
+          强度：涨停 <b>{d.zt}</b> 家（{ratio(d.zt_r)}） · 扩散度 {ratio(d.up_r)} · 成分股 {d.size} 只
+        </div>
+      </div>
+    )
+  }
 
   // 主线题材涨停家数走势已移到页面顶部「近期情绪趋势」卡片的第二行（V1.009.3）：
   // 原来是本卡底部一张全宽大图，横向浪费空间，缩成小图后与情绪指标并排更好比较
@@ -1356,11 +1410,70 @@ function ConceptEmotion({ concept, onOpenStock }) {
             ),
             dataIndex: 'stage',
             width: 92,
-            render: (v) => <Tag color={stageColor(v)}>{v}</Tag>,
+            render: (v, r) => (
+              <Tooltip title={phaseDimsDetail(r)} overlayStyle={{ maxWidth: 380 }}>
+                <Tag color={stageColor(v)} style={{ cursor: 'help', marginInlineEnd: 0 }}>
+                  {stageLabel(v)}
+                </Tag>
+              </Tooltip>
+            ),
           },
           { title: '判定依据', dataIndex: 'reason', ellipsis: true },
         ]}
       />
+
+      {(c.phase_list || []).length > 0 && (
+        <>
+          <Divider orientation="left" style={{ margin: '14px 0 8px' }}>
+            <Text strong style={{ fontSize: 13, color: '#d4380d' }}>
+              ⚠️ 情绪周期风控清单
+              <Hint k="concept_phase_risk" />
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+              今日处于「高潮 / 分歧」的板块（共 {(c.phase_list || []).length} 个）——
+              持仓该考虑撤退、空仓别追涨，不是买入推荐
+            </Text>
+          </Divider>
+          <Table
+            size="small"
+            rowKey="code"
+            pagination={false}
+            style={{ marginTop: 6 }}
+            dataSource={(c.phase_list || []).slice(0, 12)}
+            columns={[
+              {
+                title: '概念',
+                dataIndex: 'name',
+                ellipsis: true,
+                render: (v, r) => (
+                  <Tooltip title={r.reason} overlayStyle={{ maxWidth: 320 }}>
+                    <span style={{ cursor: 'help' }}>{v}</span>
+                  </Tooltip>
+                ),
+              },
+              {
+                title: '阶段',
+                dataIndex: 'stage',
+                width: 74,
+                render: (v) => <Tag color={stageColor(v)}>{v}</Tag>,
+              },
+              {
+                title: '涨跌幅',
+                dataIndex: 'pct',
+                width: 78,
+                render: (v) => <span style={{ color: pctColor(v) }}>{fmtPct(v)}</span>,
+              },
+              { title: '涨停', dataIndex: 'zt', width: 52, render: (v) => v ?? '-' },
+              {
+                title: '最高板',
+                dataIndex: 'lbc_max',
+                width: 70,
+                render: (v) => (v ? `${v} 板` : '-'),
+              },
+            ]}
+          />
+        </>
+      )}
 
       {(c.zt_contrib || []).length > 0 && (
         <>
@@ -1449,6 +1562,21 @@ function ConceptEmotion({ concept, onOpenStock }) {
                 render: (v) => <span style={{ color: pctColor(v) }}>{fmtPct(v)}</span>,
               },
               { title: '涨停', dataIndex: 'zt', width: 52, render: (v) => v ?? '-' },
+              {
+                title: '阶段',
+                dataIndex: 'stage',
+                width: 68,
+                // 涨幅高不等于在周期里 —— 很多是「无周期」中的一日脉冲。
+                // 与「启动」列配合看：启动=首日 + 阶段=启动/发酵，才是一个真正的启动窗口。
+                render: (v) =>
+                  v ? (
+                    <Tag color={stageColor(v)} style={{ marginInlineEnd: 0 }}>
+                      {stageLabel(v)}
+                    </Tag>
+                  ) : (
+                    '-'
+                  ),
+              },
               {
                 title: '启动',
                 dataIndex: 'launch',

@@ -779,11 +779,18 @@ def _zt_concept_contrib(zt_stocks: list[dict], size_map: dict | None = None,
     return contrib, stock_map
 
 
-_STAGE_ORDER = ["冰点", "启动", "发酵", "高潮", "退潮", "震荡"]
+# ⚠️ 旧词表（V1.009.6 及以前）：["冰点","启动","发酵","高潮","退潮","震荡"]。
+# V1.009.7 起全站只认 `_EMO_ORDER`（六阶段 + 潜伏），"震荡"这个词已从实现中消失
+# —— 它当时占 35.4% 却涨停均值只有 0.23 家，是纯兜底、无区分度。
 
 
 def _stage_of(pct, zt: int, seq: list[dict]) -> tuple[str, str]:
-    """概念板块周期阶段判定
+    """【已停用 · 仅供回归对照】旧口径板块周期阶段判定
+
+    V1.009.7 起**生产路径一律走 `_board_phase`**，本函数不再被任何实现调用，
+    保留的唯一目的是让技能 `aireview-emotion-cycle/scripts/compare_phases.py`
+    能跑「新口径 vs 旧口径」的对照（否则改完就再也无法复现旧基线）。
+    四个致命伤见 `_EMO_ORDER` 上方注释。
 
     pct: 今日板块涨跌幅；zt: 今日板块涨停家数
     seq: 含今日在内的近 N 日序列升序 [{date,pct,zt}]
@@ -817,26 +824,6 @@ def _stage_of(pct, zt: int, seq: list[dict]) -> tuple[str, str]:
     if cum > 0:
         return "震荡", "近%d日累计 %.2f%%，今日涨停 %d 家" % (len(zts), cum, zt)
     return "震荡", "近%d日累计 %.2f%%" % (len(zts), cum)
-
-
-def _stage_today(pct, zt: int, ratio=None) -> tuple[str, str]:
-    """无历史序列时的"当日强度"口径（周期阶段需要历史序列，见 _stage_of）"""
-    p = pct or 0
-    if zt >= 5 and p > 2:
-        return "高潮", "涨停 %d 家且板块 %+.2f%%，题材高度聚焦" % (zt, p)
-    if zt >= 3 and p > 0:
-        return "发酵", "涨停 %d 家、板块 %+.2f%%，资金持续介入" % (zt, p)
-    if zt >= 3 and p <= 0:
-        return "分歧", "涨停 %d 家但板块 %+.2f%%，资金分化" % (zt, p)
-    if zt >= 1 and p > 0:
-        return "活跃", "涨停 %d 家、板块 %+.2f%%" % (zt, p)
-    if zt >= 1:
-        return "分歧", "涨停 %d 家但板块 %+.2f%%" % (zt, p)
-    if p > 1.5:
-        return "补涨", "无涨停但板块 %+.2f%%，跟风补涨" % p
-    if p < -2:
-        return "退潮", "无涨停且板块 %+.2f%%" % p
-    return "平淡", "板块 %+.2f%%、涨停 %d 家" % (p, zt)
 
 
 def _merge_today_seq(hist: dict | None, code: str, date_str: str | None,
@@ -885,7 +872,7 @@ def roles_ctx_build(klines: dict, names: dict | None = None,
 
     返回 {"pct","lim","extra"}，三者均为 {code: {date: value}}：
       pct   : 当日涨跌幅（前复权收盘算，跨除权日连续可比）
-      lim   : 当日涨跌停标记（1 涨停 / -1 跌停），只有涨跌停日才有键
+      lim   : 当日涨跌停标记（1 涨停 / 2 炸板 / -1 跌停），只有这三种日子才有键
       extra : [成交额(元), 连板数|None, 近 cum_win 日累计涨幅%|None]
 
     `rebuild_board_daily` 与 live 路径都调用本函数。**不要各写一份** —— 涨跌停基数、
@@ -893,6 +880,10 @@ def roles_ctx_build(klines: dict, names: dict | None = None,
 
     连板判定与全站统一走 limit_state（即「除权参考价」基数 + 分市场取整方向）；
     停牌造成的K线断档会让连板归零（用全量交易日轴识别，不能只看相邻两行）。
+
+    ⚠️ V1.009.7 起 `lim` 多了一个状态 **2 = 炸板**（盘中最高价触及涨停价但收盘未封住）。
+    板块情绪周期的「炸板率」要用它。现有消费方（board_roles）一律显式判 `== 1`
+    或 `!= 1`，故新增状态不影响既有语义 —— 新写的代码也**必须显式判值，别用真值判断**。
     """
     names = names or {}
     axis = sorted({r[0] for rows in klines.values() for r in rows})
@@ -918,9 +909,12 @@ def roles_ctx_build(klines: dict, names: dict | None = None,
                 # 只有相邻交易日才能判涨跌停（停牌断档后首日不适用，故也不续连板）
                 if prev_bar is not None and prev_d in apos and d in apos \
                         and apos[d] - apos[prev_d] == 1:
-                    _fl = limit_state(prev_bar, _bar, code, nm)[0]
+                    _fl, _zbh, _ = limit_state(prev_bar, _bar, code, nm)
                     if _fl:
                         lim[d] = _fl
+                    elif _zbh is not None:
+                        # 2 = 炸板（触板未封）。V1.009.7 新增，板块炸板率要用。
+                        lim[d] = 2
             lbc = lbc + 1 if _fl == 1 else 0
             closes.append(close)
             cum = None
@@ -1219,6 +1213,50 @@ _CAP_AMT_W = 0.4
 _EMERGING_TOP = 20          # 板块涨幅进全市场概念前 N 名
 _EMERGING_RATIO = 3.0       # 且 涨停占板块比 >= 3%
 _FIRSTDAY_LOOKBACK = 10     # 「首日启动」判定：近 N 个交易日内没有过「在榜日」
+
+# ---- V1.009.7：板块情绪周期阶段重做（炒股养家六阶段下沉到板块级）----
+# 设计文档：仓库根 `情绪周期阶段判定方案_v3.md`（含阈值标定过程与全部实证数据）
+#
+# 为什么重做：旧口径（_stage_of，按「涨停家数创新高」判高潮）有三个致命伤 ——
+#   ① 没有「分歧」态（高潮后直接退潮，丢掉养家最可交易的一段）
+#   ② 「震荡」占 35.4%，涨停均值 0.23 家 —— 纯兜底、无区分度
+#   ③ 「高潮」组最高板只有 1.72（新口径 4.36）—— 它压根没抓到情绪顶点
+# 新口径在 334 板块 × 70 天（23000 条）实测：最高板组间极差 4.36 vs 旧 1.72（2.5×）、
+# 晋级率 0.46 vs 0.30、接力溢价 7.68 vs 5.30；炸板率 分歧 0.56 = 高潮 0.19 的 2.9 倍
+# （正好印证养家「分歧期炸板率 ≥30%」）。
+#
+# 三个必须一起解决的下沉难题（缺一个就退化）：
+#   ① 规模歧视换马甲：绝对家数（涨停/炸板/断板）都被成分股数量绑架（995 只的巨型板块
+#      天天「炸板多」）→ **一律归一化**，家数永不直接进判据。
+#   ② 小样本比例高估：板块成分股 p50 仅 67 只、73 个 ≤20 只，20 只里 2 家涨停 = 10%
+#      但置信区间极宽 → **贝叶斯收缩** z=(zt + K·p₀)/(cnt + K)。
+#   ③ 六阶段是「环」不是「轴」：启动与退潮强度都低但方向相反、分歧强度不低但含义是
+#      「高位撕裂」→ **状态机**（活跃态只能在活跃态内演化），否则会出现「退潮→高潮」
+#      这种无中间过程的跳跃。
+_EMO_ORDER = ["冰点", "启动", "发酵", "高潮", "分歧", "退潮", "潜伏"]
+_EMO_ACTIVE = ("启动", "发酵", "高潮", "分歧")
+# 强度序（只用于统计「跨 ≥2 级转移率」，不是判定依据）
+_EMO_GRADE = {"冰点": 0, "启动": 1, "发酵": 2, "高潮": 3, "分歧": 4, "退潮": 5}
+_EMO_SHRINK_K = 20.0        # 贝叶斯收缩强度（往基准占比回归的等效样本量）
+_EMO_P0 = 0.016328          # 基准涨停占比 p₀（全样本 Σzt/Σcnt，见方案 §2.0）
+_EMO_MIN_CNT = 20           # 参与周期判定的最小有效成分股数（低于此不判周期）
+_EMO_ZB_WIN = 20            # 「炸板率相对自身历史」的窗口
+_EMO_ZB_MIN = 10            # 窗口内至少这么多样本才启用炸板判据
+_EMO_ZB_UP = 0.25           # 炸板率异常上升的增量阈值（比自身均值高这么多）
+_EMO_NEW_LOOKBACK = 10      # 「近 N 日无活跃」→ 才算新方向（启动）
+_EMO_PEAK_H = 4             # 高潮·高度腿：板块内最高板
+_EMO_PEAK_QZ = 0.97         # 高潮·广度腿：涨停强度分位
+_EMO_PEAK_UPR = 0.70
+_EMO_PEAK_ZT = 5
+_EMO_START_QZ = 0.85        # 启动 / 发酵 的强度分位门槛
+_EMO_START_UPR = 0.55
+_EMO_FERM_QZ = 0.80
+_EMO_FERM_UPR = 0.50
+_EMO_ICE_RS = -1.0          # 冰点：跑输大盘
+_EMO_ICE_UPR = 0.35
+_EMO_FADE_RS = -0.8         # 退潮（活跃态内）：明显转弱
+_EMO_FADE_UPR = 0.40
+_EMO_FADE_ZT = 1
 
 
 def _rank_pct(pairs: list) -> dict:
@@ -1600,26 +1638,55 @@ def _market_state(n_core: int) -> tuple:
     return "全面开花", "核心主线 %d 个 —— 情绪周期里常是普涨末期，反而该警惕" % n_core
 
 
+def _phase_prev_state(seq: list | None, date_str: str | None) -> tuple:
+    """从板块历史序列取状态机的「昨日状态」
+
+    → (上一日阶段, 炸板率基准, 近 N 日是否活跃过, 上一日最高板)
+
+    ⚠️ 只取 `date < date_str` 的行 —— 重建后的 hist 末尾**可能已含当日**，
+    不排掉就是拿今天的阶段当昨天用，实时日的相位转移关系会整体错位（且不报错）。
+    """
+    rows = [x for x in (seq or [])
+            if not date_str or (x.get("date") or "") < date_str]
+    if not rows:
+        return None, None, False, None
+    zb = [x.get("zb_r") for x in rows[-_EMO_ZB_WIN:]]
+    zb = [v for v in zb if isinstance(v, (int, float))]
+    base = (sum(zb) / len(zb)) if len(zb) >= _EMO_ZB_MIN else None
+    act = any((x.get("stage") in _EMO_ACTIVE) for x in rows[-_EMO_NEW_LOOKBACK:])
+    return (rows[-1].get("stage"), base, act, rows[-1].get("lbc_max"))
+
+
 def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                     hist: dict | None = None, top_n: int = 15,
                     date_str: str | None = None,
                     roles_ctx: dict | None = None,
                     roles_members: dict | None = None,
                     concept_codes: set | None = None,
-                    index_pct: dict | None = None) -> dict:
+                    index_pct: dict | None = None,
+                    zb_pool: list | None = None,
+                    prev_perf: dict | None = None) -> dict:
     """概念板块每日情绪周期分析（V1.009.1 核心）
 
     boards: 概念板块全量（当日实时 / 历史重建结果均可）
     zt_stocks: 当日涨停个股（实时口径）；留空则用 board 行自带的涨停家数（历史重建口径）
-    hist: 可选 {板块代码: [{date,pct,zt,up,size}, ...]} 近 N 日序列，用于周期阶段与主线持续性
+    hist: 可选 {板块代码: [{date,pct,zt,up,size,stage,zb_r,...}, ...]} 近 N 日序列，
+      周期阶段与主线持续性都用它
     date_str: 当日日期（用于把当日并入历史序列）
     roles_ctx / roles_members: 个股角色分层（龙头/中军/跟风/补涨）所需的两个数据源 ——
       roles_ctx     = {"pct","lim","extra"}，历史走 roles_ctx_build、实时走 roles_ctx_live
       roles_members = {板块代码: {"name","members":[{code,name,mktcap}]}}
     只对进入「主线题材」的板块计算（控制快照体积）；缺任一者则该字段为空。
+    实时路径下 roles_members 还兼作「炸板池 / 昨日涨停股 → 所属板块」的反查表
+    （周期阶段要用，见下方 _rev）。
     concept_codes: 概念全集（实时路径必须传，见 _zt_concept_contrib）
-    index_pct: {指数名: {日期: 涨跌幅%}} —— 持续性条件 a「板块涨幅 > 上证指数」的基准。
-      缺失时条件 a 退化为「涨幅 > 0」（_onboard 内处理），不判 False、不静默归零。
+    index_pct: {指数名: {日期: 涨跌幅%}} —— 持续性条件 a「板块涨幅 > 上证指数」的基准，
+      同时也是周期阶段「相对强度 rs」的基准。缺失时条件 a 退化为「涨幅 > 0」
+      （_onboard 内处理），不判 False、不静默归零。
+    zb_pool: 当日炸板池个股（实时口径，含 is_st）；重建口径留空 —— 板块炸板数由
+      `rebuild_board_daily` 由个股日K聚合（见 limit_state 的 2 态）。
+    prev_perf: 昨日涨停股今日表现（实时口径，`_prev_limit_up_perf` 的结果）。
+      实时日的晋级率 / 接力溢价 / 断板数从它而来（重建口径已随板块行落库）。
     """
     if not boards:
         return {"available": False, "total": 0,
@@ -1684,6 +1751,95 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
     # 恒为 0，而历史重建日正常，形成一条只在实时路径出现、不报错的分叉。
     _zt_cnt = {c["code"]: int(c.get("count") or 0) for c in contrib}
 
+    # ---- 情绪周期八指标 + 阶段（V1.009.7）----
+    # 两条路径**必须走同一个 _board_phase**，否则同一天在「今天（实时）」与「昨天（重建）」
+    # 会看到两个阶段。历史日的八指标与阶段在 attach_board_phases 里随行下来（同一份口径）；
+    # 实时日的八指标在这里现算（涨停池 / 炸板池 / 昨日涨停今日表现 / 板块成分股缓存）。
+    # {code: (阶段, 依据, 八指标明细)}
+    _tphase: dict = {}
+    if zt_stocks:
+        # 「个股 → 所属板块」反查表：由板块成分股缓存构建（纯本地，不再打接口）。
+        # 炸板池与昨日涨停股都要按板块聚合，用同一张表可保证分子分母同源。
+        _rev: dict = {}
+        for _bc, _bi in (roles_members or {}).items():
+            for _m in (_bi.get("members") or []):
+                if _m.get("code"):
+                    _rev.setdefault(_m["code"], []).append(_bc)
+        # 板块炸板家数（剔 ST，与涨跌停主口径一致）
+        _zb_by_board: dict = {}
+        for _s in (zb_pool or []):
+            if _s.get("is_st"):
+                continue
+            for _bc in (_rev.get(_s.get("code")) or ()):
+                _zb_by_board[_bc] = _zb_by_board.get(_bc, 0) + 1
+        # 每板块的晋级率 / 接力溢价 / 断板数 —— 全部来自「昨日涨停股今日表现」
+        _pp_by_board: dict = {}
+        for _it in ((prev_perf or {}).get("items") or []):
+            for _bc in (_rev.get(_it.get("code")) or ()):
+                _d2 = _pp_by_board.setdefault(_bc, {"n": 0, "again": 0, "ps": [], "brk": 0})
+                _d2["n"] += 1
+                if _it.get("again_limit_up"):
+                    _d2["again"] += 1
+                if isinstance(_it.get("pct"), (int, float)):
+                    _d2["ps"].append(_it["pct"])
+                # 断板 = 昨日连板（≥2 板）今日未再涨停
+                if int(_it.get("prev_lbc") or 1) >= 2 and not _it.get("again_limit_up"):
+                    _d2["brk"] += 1
+        _lbm = {c["code"]: (int(c.get("lbc_max") or 0), int(c.get("lbc2") or 0))
+                for c in contrib}
+        _lrows: list = []
+        for b in boards:
+            _bc = b["code"]
+            _nm = b.get("name")
+            if not _nm or _is_noise_board(_nm):
+                continue
+            _sz = int(size_map.get(_bc) or 0)
+            _z = int(_zt_cnt.get(_bc, b.get("zt")) or 0)
+            _zb = int(_zb_by_board.get(_bc) or 0)
+            _up = int(b.get("up") or 0)
+            _p2 = _pp_by_board.get(_bc) or {}
+            _n2 = int(_p2.get("n") or 0)
+            _ps = _p2.get("ps") or []
+            _lm = _lbm.get(_bc) or (0, 0)
+            _lrows.append({
+                "code": _bc, "name": _nm, "pct": b.get("pct"),
+                "count": _sz, "up": _up, "down": int(b.get("down") or 0),
+                "zt": _z, "zb": _zb,
+                "lbc_max": _lm[0], "lbc2": _lm[1],
+                "brk_n": int(_p2.get("brk") or 0),
+                "promo": (round(int(_p2.get("again") or 0) / _n2, 4) if _n2 else None),
+                "prem": (round(sum(_ps) / len(_ps), 3) if _ps else None),
+                "zt_r": (round(_z / _sz, 4) if _sz else None),
+                "up_r": (round(_up / _sz, 4) if _sz else None),
+                "zb_r": (round(_zb / (_z + _zb), 4) if (_z + _zb) else None),
+            })
+        # 当日横截面分位（与 attach_board_phases 的 ① 同一算法，规模歧视靠它消除）
+        _zs = sorted(_emo_z(r) for r in _lrows if _emo_eligible(r))
+        _nq = len(_zs)
+        # 缺少板块成分股缓存时，炸板 / 断板 / 晋级 / 溢价一律取不到 —— 降级但**不报错**，
+        # 用剩余指标继续判（涨停强度与扩散度已能覆盖大半规则树），并在 note 里说明。
+        _degraded = not roles_members
+        _sh_map = (index_pct or {}).get("上证指数") or {}
+        for r in _lrows:
+            if not _emo_eligible(r):
+                r["stage"] = "潜伏"
+                r["phase_reason"] = ("成分股仅 %d 只（<%d），样本过小不做周期判定"
+                                     % (r["count"], _EMO_MIN_CNT))
+                r["phase_dims"] = _emo_dims(r)
+            else:
+                _qz = (bisect.bisect_right(_zs, _emo_z(r)) / _nq) if _nq else None
+                _ps_ = _phase_prev_state((hist or {}).get(r["code"]), date_str)
+                r["stage"], r["phase_reason"] = _board_phase(
+                    r, _ps_[0], _qz, _ps_[1], _ps_[2], _ps_[3], _sh_map.get(date_str))
+                r["phase_dims"] = _emo_dims(r, _ps_[1])
+            _tphase[r["code"]] = (r["stage"], r["phase_reason"], r["phase_dims"])
+    else:
+        # 历史重建：阶段与八指标在 attach_board_phases 已写好，直接取用
+        for b in boards:
+            if b.get("stage"):
+                _tphase[b["code"]] = (b["stage"], b.get("phase_reason") or "",
+                                      b.get("phase_dims") or {})
+
     # ---- 主线题材：资格线筛池 → 四维打分 → 分级（V1.009.5 取代旧的"取前 N 名"）----
     # 涨幅 >= 全市场概念的 95 分位（资格线条件③用）
     _pct_all = sorted([b["pct"] for b in boards if isinstance(b.get("pct"), (int, float))])
@@ -1739,7 +1895,39 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
         _r = dict(b, zt=_z)
         _r.update(_firstday_info(day_idx, b["code"], _hist_days, sh_map, date_str,
                                  zt_today=_z))
+        # 涨幅榜也带周期阶段（V1.009.7）：涨幅高不等于在周期里 —— 很多是「潜伏」中的
+        # 一日脉冲，分开显示才能避免把脉冲当主线。
+        _tp2 = _tphase.get(b["code"])
+        _r["stage"] = _tp2[0] if _tp2 else None
+        _r["phase_dims"] = _tp2[2] if _tp2 else None
         top_up.append(_r)
+
+    # ---- 风控清单：今日处于「高潮 / 分歧」的板块（V1.009.7）----
+    # 这是阶段标签最强的用途 —— 实测「高潮」次日跌超 3% 的概率 15.5%，
+    # 是「发酵」的 2 倍、「退潮」的 6 倍，且是唯一均值为负的组。
+    # 它回答的不是「买什么」，而是「手上有的该不该减、空仓的该不该忍住别追」。
+    phase_list = []
+    for _c, _t in _tphase.items():
+        if _t[0] not in ("高潮", "分歧"):
+            continue
+        _b = bmap.get(_c) or {}
+        # ⚠️ 「最高板」必须从 phase_dims 取，**不能从 bmap 取**：
+        # 实时路径的板块行（boards）**没有 lbc_max 字段** —— 它来自连板池 contrib，
+        # 只在 _lrows 里被拼进去（见上面 `_lbm`）。实测踩过：实时日风控清单的「最高板」
+        # 整列恒为 0，而同一行的理由却写着「出现 4 板高标」，自相矛盾；更隐蔽的是排序键
+        # `-lbc_max` 一起退化成恒 0 —— 清单悄悄变成「只按涨幅排」（不报错、不崩，
+        # 只是「高潮优先、最高板降序」这个设计意图没了）。重建路径因为 bmap 恰好带
+        # lbc_max 而看不出问题，属于只在实时日复现的分叉。
+        # phase_dims 是**两条路径都带** lbc_max 的唯一同源取值点。
+        _pd = _t[2] or {}
+        phase_list.append({
+            "code": _c, "name": _b.get("name") or _c, "pct": _b.get("pct"),
+            "zt": int(_pd.get("zt") or _zt_cnt.get(_c, _b.get("zt")) or 0),
+            "lbc_max": int(_pd.get("lbc_max") or _b.get("lbc_max") or 0),
+            "stage": _t[0], "reason": _t[1],
+        })
+    phase_list.sort(key=lambda x: (0 if x["stage"] == "高潮" else 1,
+                                   -x["lbc_max"], -(x["pct"] if isinstance(x["pct"], (int, float)) else -99)))
 
     # 今日启动（V1.009.6，方案 A）：涨幅进全市场概念前 _EMERGING_TOP 且涨停占比
     # >= _EMERGING_RATIO 的板块**单列**。它不参与持续性/高度排序、不进主线表 ——
@@ -1775,10 +1963,13 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
              "lbc_max": int(m.get("lbc_max") or 0),
              "lbc2": int(m.get("lbc2") or 0),
              "amt": m.get("amt") or 0})
-        if len(seq_use) >= 3:   # 有历史序列 → 真实周期阶段；否则退化为"当日强度"口径
-            stage, reason = _stage_of(m.get("pct"), zt_cnt, seq_use)
+        # 周期阶段（V1.009.7）：两条路径都从 _tphase 取 —— 同一天「实时」与「重建」
+        # 必须给出同一个阶段，故判定只发生在 _board_phase 一处。
+        _tp = _tphase.get(m["code"])
+        if _tp:
+            stage, reason, _pdims = _tp[0], _tp[1], _tp[2]
         else:
-            stage, reason = _stage_today(m.get("pct"), zt_cnt, m.get("ratio"))
+            stage, reason, _pdims = "潜伏", "该板块当日未参与周期判定", {}
         bd = bmap.get(m["code"]) or {}
         # 角色分层：只对进入主线题材的板块算（每板块一次成分股扫描，成本可控）
         _roles = None
@@ -1824,6 +2015,7 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
             "mainflow": bd.get("mainflow"),
             "stage": stage,
             "reason": reason,
+            "phase_dims": _pdims,
             "zt_codes": (m.get("codes") or [])[:12],
             "seq": seq_use[-10:],
             "roles": _roles,
@@ -1907,10 +2099,23 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
         "zt_contrib": contrib[:20],
         "main_lines": main_lines,
         "stage_count": stage_count,
+        # ---- V1.009.7：情绪周期阶段（风控清单 + 阈值下发）----
+        # 清单是「高潮 / 分歧」的板块全集（不限于主线表），因为风控要看的是
+        # 手上持仓所在的板块，而它常常不在今天的核心主线里。
+        "phase_list": phase_list,
+        "phase_order": _EMO_ORDER,
+        "phase_min_cnt": _EMO_MIN_CNT,
+        "phase_peak_h": _EMO_PEAK_H,
+        "phase_zb_up": _EMO_ZB_UP,
+        "phase_zb_win": _EMO_ZB_WIN,
+        "phase_zb_min": _EMO_ZB_MIN,
+        "phase_lookback": _EMO_NEW_LOOKBACK,
+        "phase_fade_zt": _EMO_FADE_ZT,
         "hist_used": bool(hist),
         "note": "" if hist else
-                "尚未建立板块历史序列：周期阶段为「当日强度」口径；"
-                "执行「历史数据重建」后可获得启动 / 发酵 / 高潮 / 退潮等真实周期阶段",
+                "尚未建立板块历史序列：只能判定「启动 / 发酵 / 冰点 / 潜伏」四个新生相位，"
+                "高潮 / 分歧 / 退潮需要前一日的阶段与自身炸板率基准（依赖历史序列）。"
+                "执行「历史数据重建」后可获得完整六阶段。",
     }
 
 
@@ -2593,6 +2798,11 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
 
     涨停家数 = 成分股当日收盘涨停数（收盘价 = 交易所涨停价，见 limit_state）。
 
+    V1.009.7 起在同一遍遍历里**顺带聚合**情绪周期要用的六个板块级指标（零额外数据源）：
+      zb(炸板家数) / lbc_n(连板家数) / brk_n(断板数) / promo(晋级率) / prem(接力溢价)
+      / zt_r·up_r·zb_r（三个比例）。这些全是「昨日涨停/连板集合」与「今日结果」的比较，
+      需要在板块内**跨交易日**维护两份集合（prev_zt / prev_lb），故放在日期循环外。
+
     ctx_out: 可选输出参数，回填个股指标与名称映射 —— 角色分层（board_roles）需要
     同一份指标，借此避免重复遍历 5900 只个股日K，也保证两者口径完全同源。
     """
@@ -2630,22 +2840,30 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
             cps.append((c, m.get("name") or name_map.get(c, ""), p))
         if not cps:
             continue
+        # 板块内跨日状态：昨日涨停集合 / 昨日连板集合（晋级率、断板数、接力溢价用）
+        prev_zt: set = set()
+        prev_lb: set = set()
         for d in dates:
             vals = []
             zt = 0
+            zb = 0               # 炸板家数（触板未封）
             up = 0
             down = 0
             lbc_max = 0          # 当日涨停股里的最高连板（空间高度）
-            lbc2 = 0             # 当日二板及以上家数（梯队厚度）
+            lbc2 = 0             # 当日二板及以上家数（梯队厚度 ＝ 连板家数 lbc_n）
             amt = 0.0            # 当日涨停股成交额合计（资金容量）
             lead_n, lead_p = "", None
+            zt_codes: list = []  # 当日涨停股代码（算晋级率 / 断板 / 接力溢价）
+            lb_codes: list = []  # 当日二板及以上代码（算断板）
             for (c, nm, p) in cps:
                 pv = p.get(d)
                 if pv is None:
                     continue
                 vals.append(pv)
-                if (code_limit.get(c) or {}).get(d) == 1:
+                _lim = (code_limit.get(c) or {}).get(d) or 0
+                if _lim == 1:
                     zt += 1
+                    zt_codes.append(c)
                     _e = (code_extra.get(c) or {}).get(d) or []
                     _amt = _e[0] if len(_e) > 0 else None
                     _lbc = _e[1] if len(_e) > 1 else None
@@ -2656,6 +2874,9 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                         lbc_max = _lb
                     if _lb >= 2:
                         lbc2 += 1
+                        lb_codes.append(c)
+                elif _lim == 2:
+                    zb += 1
                 if pv > 0:
                     up += 1
                 elif pv < 0:
@@ -2663,9 +2884,23 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 if lead_p is None or pv > lead_p:
                     lead_p, lead_n = pv, nm
             if not vals:
+                # 当日无有效成分股（全停牌）→ 清空跨日集合，下一日不做「昨日」比较
+                prev_zt, prev_lb = set(), set()
                 continue
+            # 昨日涨停股中今日仍未涨停的（断板）—— 用**昨日连板**集合算缺口
+            brk_n = len(prev_lb - set(zt_codes)) if prev_lb else 0
+            # 晋级率 = 昨日涨停股今日再涨停 ÷ 昨日涨停数
+            promo = (len(set(zt_codes) & prev_zt) / len(prev_zt)) if prev_zt else None
+            # 接力溢价 = 昨日涨停股今日平均涨幅（打板盈亏的代理）
+            prem = None
+            if prev_zt:
+                _ps = [(code_pct.get(c) or {}).get(d) for c in prev_zt]
+                _ps = [x for x in _ps if x is not None]
+                if _ps:
+                    prem = sum(_ps) / len(_ps)
+            _cnt = len(vals)
             # 等权平均（对齐东财概念板块指数口径，见函数文档）
-            pct = round(sum(vals) / len(vals), 2)
+            pct = round(sum(vals) / _cnt, 2)
             out[d].append({
                 "code": bk,
                 "name": info.get("name") or bk,
@@ -2673,19 +2908,228 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 "zt": zt,
                 "up": up,
                 "down": down,
-                "count": len(vals),
+                "count": _cnt,
                 "lead_name": lead_n,
                 "lead_pct": round(lead_p, 2) if lead_p is not None else None,
                 # V1.009.5：板块维度的空间高度与资金容量
                 "lbc_max": lbc_max,
                 "lbc2": lbc2,
                 "amt": round(amt, 0) if amt else 0,
+                # ---- V1.009.7：情绪周期八指标（全部规模无关）----
+                "zb": zb,                                    # 炸板家数
+                "lbc_n": lbc2,                               # 连板家数（二板及以上）
+                "brk_n": brk_n,                              # 断板数
+                "promo": (round(promo, 4) if promo is not None else None),
+                "prem": (round(prem, 3) if prem is not None else None),
+                "zt_r": round(zt / _cnt, 4),                 # 涨停率
+                "up_r": round(up / _cnt, 4),                 # 扩散度（上涨家数占比）
+                # 炸板率 = 炸板 / (涨停 + 炸板)；分母为 0 时为 None（不是 0）
+                "zb_r": (round(zb / (zt + zb), 4) if (zt + zb) else None),
             })
+            prev_zt, prev_lb = set(zt_codes), set(lb_codes)
         if on_progress and (done % 50 == 0 or done == total):
             on_progress(done, total)
     for d in out:
         out[d].sort(key=lambda x: -(x["pct"] if x["pct"] is not None else -999))
     return out
+
+
+def _emo_eligible(row: dict) -> bool:
+    """该板块当日是否参与情绪周期判定
+
+    条件：有效成分股 >= `_EMO_MIN_CNT` 且不是伪板块（宽基 / 资金属性 / 交易标签 /
+    地域统计 —— 复用 `_is_noise_board`）。
+
+    ⚠️ 成分股过小的板块**不判周期**：占比极不稳定（20 只里 2 家涨停＝10%，
+    但置信区间横跨 3%~32%），贝叶斯收缩也救不回语义。前端显示为「潜伏」并注明
+    原因 —— 宁可说「样本不足」，也不伪造一个阶段。
+    """
+    return (int(row.get("count") or 0) >= _EMO_MIN_CNT
+            and not _is_noise_board(row.get("name")))
+
+
+def _emo_z(row: dict) -> float:
+    """贝叶斯收缩后的涨停强度 z = (zt + K·p₀) / (cnt + K)
+
+    为什么必须收缩：板块成分股中位数仅 **67 只**、**73 个 ≤20 只**。20 只里 2 家涨停
+    = 10%，直接当比例用会系统性高估（小样本比例偏差）。取 K=20、p₀=1.6328% 后，
+    「20 只 2 家涨停」由 10% 收敛到 (2+0.326)/40 = 5.8%，而 985 只的板块几乎不动
+    （收缩量仅 20/1005）—— 收缩强度与样本量成反比，正是要的效果。
+    """
+    cnt = int(row.get("count") or 0)
+    zt = int(row.get("zt") or 0)
+    return (zt + _EMO_SHRINK_K * _EMO_P0) / (cnt + _EMO_SHRINK_K)
+
+
+def _emo_dims(row: dict, zb_base=None) -> dict:
+    """八指标明细（前端悬停显示 / 报告附注用）"""
+    return {
+        "size": int(row.get("count") or 0),
+        "zt": int(row.get("zt") or 0),
+        "zt_r": row.get("zt_r"),
+        "zb": int(row.get("zb") or 0),
+        "zb_r": row.get("zb_r"),
+        "zb_base": (round(zb_base, 4) if zb_base is not None else None),
+        "lbc_max": int(row.get("lbc_max") or 0),
+        "lbc_n": int(row.get("lbc2") or row.get("lbc_n") or 0),
+        "brk_n": int(row.get("brk_n") or 0),
+        "promo": row.get("promo"),
+        "prem": row.get("prem"),
+        "up_r": row.get("up_r"),
+    }
+
+
+def _board_phase(row: dict, prev_stage, qz, zb_base, active_recent, prev_lbc,
+                 sh_pct) -> tuple[str, str]:
+    """板块情绪周期阶段判定（V1.009.7 定稿「龙头分水岭」口径）—— **纯函数**
+
+    输入（全部规模无关；绝对家数一律不直接进判据）：
+      row          : 当日板块行（pct / zt / count / up / zb_r / lbc_max / lbc2 / brk_n）
+      prev_stage   : 上一交易日阶段（None = 窗口首日，按非活跃态处理）
+      qz           : 涨停强度 z 在**当日在册板块**中的分位（0~1），规模歧视靠它消除
+      zb_base      : 该板块近 _EMO_ZB_WIN 日炸板率均值（样本 < _EMO_ZB_MIN 时为 None）
+      active_recent: 此前 _EMO_NEW_LOOKBACK 日内是否出现过活跃态（判「是否新方向」）
+      prev_lbc     : 上一交易日最高连板（判「龙头是否还在创新高」）
+      sh_pct       : 当日上证指数涨跌幅（相对强度基准）
+
+    返回 (阶段, 判定依据)。
+
+    ⚠️ 活跃态内以「龙头是否仍在创新高」划分 高潮 / 分歧，是本版与「撕裂优先」旧版的
+    唯一差别，也是有实质意义的修正：旧版把 **72 天「同时满足高潮条件却被判成分歧」**
+    的高潮延续日（涨停 8.71 家、比高潮组还多）误判成分歧，导致连续高潮被切成碎片
+    —— 高潮段平均 1.38 天、≥3 天段仅 14 个；修正后 1.53 天 / 31 个。
+    养家对「分歧」的定义是**龙头首阴**；龙头还在加速时的炸板/断板只是「内部换手」。
+    """
+    zt = int(row.get("zt") or 0)
+    cnt = int(row.get("count") or 0)
+    upr = round(int(row.get("up") or 0) / cnt, 4) if cnt else 0.0
+    zb = row.get("zb_r")
+    lbmax = int(row.get("lbc_max") or 0)
+    lbn = int(row.get("lbc2") or row.get("lbc_n") or 0)
+    brkn = int(row.get("brk_n") or 0)
+    _pct = row.get("pct") or 0.0
+    rs = round(_pct - (sh_pct or 0.0), 2)
+
+    zb_up = bool(zb is not None and zb_base is not None and zb >= zb_base + _EMO_ZB_UP)
+    is_split = bool(zb_up or brkn >= 2)
+    peak_h = lbmax >= _EMO_PEAK_H
+    peak_w = bool(qz is not None and qz >= _EMO_PEAK_QZ and upr >= _EMO_PEAK_UPR
+                  and zt >= _EMO_PEAK_ZT and lbn >= 1)
+    is_peak = bool(peak_h or peak_w)
+    hi_rising = lbmax >= int(prev_lbc or 0)
+
+    if prev_stage in _EMO_ACTIVE:
+        # A1 退潮优先：明显转弱（跑输大盘 + 普跌 + 涨停消失）
+        if rs < _EMO_FADE_RS and upr < _EMO_FADE_UPR and zt <= _EMO_FADE_ZT:
+            return "退潮", ("明显转弱：板块 %+.2f%%（跑输大盘 %.2f 个点）、"
+                          "上涨仅 %.0f%%、涨停 %d 家"
+                          % (_pct, -rs, upr * 100, zt))
+        # A2 高潮：达到峰值 且 （龙头仍在创新高 或 没有撕裂）
+        if is_peak and (hi_rising or not is_split):
+            why = ("出现 %d 板高标" % lbmax) if peak_h else (
+                "涨停强度进全市场前 %.0f%%（涨停 %d 家、扩散度 %.0f%%、连板 %d 家）"
+                % ((1 - qz) * 100, zt, upr * 100, lbn))
+            if is_split:
+                why += "，龙头仍在创新高（撕裂属内部换手）"
+            return "高潮", why
+        # A3 分歧：有撕裂 且 龙头不再创新高（＝养家的「龙头首阴」）
+        if is_split:
+            _w = []
+            if zb_up:
+                _w.append("炸板率 %.2f 高于自身均值 %.2f" % (zb, zb_base))
+            if brkn >= 2:
+                _w.append("断板 %d 只" % brkn)
+            return "分歧", ("龙头首阴（最高板 %s → %d）＋%s"
+                          % (("%d" % prev_lbc) if prev_lbc else "0", lbmax, "、".join(_w)))
+        # A4 发酵
+        if (lbn >= 1 or (qz is not None and qz >= _EMO_FERM_QZ)) and upr >= _EMO_FERM_UPR:
+            return "发酵", ("连板 %d 家、涨停 %d 家、上涨 %.0f%%，梯队仍在扩散"
+                          % (lbn, zt, upr * 100))
+        # A5 兜底：跑输大盘判退潮，否则发酵
+        if rs < 0:
+            return "退潮", "跑输大盘 %.2f 个点，且梯队未接上" % (-rs)
+        return "发酵", "涨停 %d 家但梯队未成形，仍在扩散中" % zt
+
+    # ---- 分支 B：昨日非活跃态（启动 / 发酵 / 冰点 / 潜伏）----
+    if (not active_recent and qz is not None and qz >= _EMO_START_QZ
+            and upr >= _EMO_START_UPR and lbmax <= 2 and zt >= 2):
+        return "启动", ("近 %d 日无活跃，今日涨停强度进前 %.0f%%（涨停 %d 家、上涨 %.0f%%）、"
+                      "高度仅 %d 板，梯队尚未成形"
+                      % (_EMO_NEW_LOOKBACK, (1 - qz) * 100, zt, upr * 100, lbmax))
+    if (qz is not None and qz >= _EMO_START_QZ and upr >= _EMO_START_UPR
+            and (lbn >= 1 or zt >= 3)):
+        return "发酵", ("涨停强度进前 %.0f%%（涨停 %d 家、上涨 %.0f%%）%s"
+                      % ((1 - qz) * 100, zt, upr * 100,
+                         ("、连板 %d 家" % lbn) if lbn else ""))
+    if zt == 0 and rs < _EMO_ICE_RS and upr < _EMO_ICE_UPR:
+        return "冰点", ("无涨停、板块 %+.2f%%（跑输大盘 %.2f 个点）、上涨仅 %.0f%%"
+                      % (_pct, -rs, upr * 100))
+    return "潜伏", "未进入情绪周期（无涨停联动，或强度 / 扩散度不足）"
+
+
+def attach_board_phases(board_daily: dict, dates: list[str],
+                        index_pct: dict | None = None) -> dict:
+    """为板块每日行写入情绪周期阶段（**就地修改** board_daily 并返回）
+
+    两遍扫描，顺序不能换：
+      ① **逐日横截面** —— 算涨停强度 z 的当日分位 qz。必须跨板块排名，
+         否则「20 只 vs 985 只」的规模歧视会从 qz 这条缝里再钻回来。
+      ② **逐板块沿日期推进状态机** —— 六阶段是「环」不是「轴」（启动与退潮强度都低
+         但方向相反、分歧强度不低但含义是高位撕裂），所以活跃态只能在活跃态内演化；
+         单轴阈值切必然出现「退潮 → 高潮」这种无中间过程的跳跃。
+
+    状态在板块内跨日传递，三份：
+      zb_hist（炸板率自身近 _EMO_ZB_WIN 日，判「撕裂」）、
+      act（近 _EMO_NEW_LOOKBACK 日是否活跃，判「新方向」）、
+      last_lbc（昨日最高板，判「龙头是否还在创新高」）。
+    ⚠️ zb_base / active_recent 都在**当日判定之前**取值，不含当日 —— 否则就是
+    用今天的信息判今天的阶段，回看时会看到不存在的「事后聪明」。
+    """
+    sh_map = (index_pct or {}).get("上证指数") or {}
+    # ---- ① 当日横截面分位 ----
+    z_of: dict = {}
+    for d in dates:
+        part = [r for r in (board_daily.get(d) or []) if _emo_eligible(r)]
+        zs = sorted(_emo_z(r) for r in part)
+        n = len(zs)
+        for r in part:
+            z_of[(d, r["code"])] = (bisect.bisect_right(zs, _emo_z(r)) / n) if n else None
+    # ---- ② 逐板块状态机 ----
+    codes = sorted({r["code"] for d in dates for r in (board_daily.get(d) or [])})
+    bucket = {d: {r["code"]: r for r in (board_daily.get(d) or [])} for d in dates}
+    for code in codes:
+        zb_hist: list = []
+        act: list = []
+        last_lbc = None
+        prev_stage = None
+        for d in dates:
+            r = bucket[d].get(code)
+            if r is None:
+                continue
+            if not _emo_eligible(r):
+                r["stage"] = "潜伏"
+                r["phase_reason"] = ("成分股仅 %d 只（<%d），样本过小不做周期判定"
+                                     % (int(r.get("count") or 0), _EMO_MIN_CNT))
+                r["phase_dims"] = _emo_dims(r)
+                continue
+            zb_base = ((sum(zb_hist) / len(zb_hist))
+                       if len(zb_hist) >= _EMO_ZB_MIN else None)
+            st, why = _board_phase(r, prev_stage, z_of.get((d, code)), zb_base,
+                                   any(act[-_EMO_NEW_LOOKBACK:]), last_lbc,
+                                   sh_map.get(d))
+            r["stage"] = st
+            r["phase_reason"] = why
+            r["phase_dims"] = _emo_dims(r, zb_base)
+            if len(act) >= _EMO_NEW_LOOKBACK:
+                act.pop(0)
+            act.append(st in _EMO_ACTIVE)
+            if r.get("zb_r") is not None:
+                zb_hist.append(r["zb_r"])
+                if len(zb_hist) > _EMO_ZB_WIN:
+                    zb_hist.pop(0)
+            last_lbc = r.get("lbc_max")
+            prev_stage = st
+    return board_daily
 
 
 def board_history_from_daily(board_daily: dict, dates: list[str],
@@ -2701,6 +3145,12 @@ def board_history_from_daily(board_daily: dict, dates: list[str],
     V1.009.6 起补 `up`（上涨家数）：持续性新口径的条件 c「上涨家数 > 成分股×60%」
     要用它。`rebuild_board_daily` 一直在算 up，只是**没落库** —— 故本版必须重建历史
     序列才能让历史日期也满足条件 c（只换代码不重建 → 历史日在榜天数偏少，且不报错）。
+
+    V1.009.7 起补 `stage`（已判定的阶段）与 `zb_r`（炸板率）：
+      stage  → 实时日推状态机时要读「近 10 日是否活跃过」与「昨日阶段」，没有它实时日
+               就会永远按「非活跃态」判，启动/发酵的语义全错；
+      zb_r   → 实时日的 `zb_base`（炸板率自身近 20 日均值）只能从这里取。
+    ⚠️ 所以 V1.009.7 **必须重建历史**，否则实时日的阶段会静默降级（不报错）。
 
     ratio 用**当日有效成分股数**（count，停牌股会改变当日基数）算，不用静态板块规模。
     """
@@ -2726,6 +3176,9 @@ def board_history_from_daily(board_daily: dict, dates: list[str],
                 "lbc_max": int(b.get("lbc_max") or 0),
                 "lbc2": int(b.get("lbc2") or 0),
                 "amt": b.get("amt") or 0,
+                # ---- V1.009.7：情绪周期实时路径所需的跨日状态（只有这两项是必需的）----
+                "stage": b.get("stage"),
+                "zb_r": b.get("zb_r"),
             })
     return out
 
@@ -3051,6 +3504,14 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
                 on_fetched=(lambda c, n, m: member_saver(c, n, m)) if member_saver else None)
             step("聚合板块每日表现", 88)
             boards_by_date = rebuild_board_daily(mem, klines, dates, ctx_out=board_ctx)
+            # 情绪周期阶段（V1.009.7）：必须在 board_history_from_daily **之前**写入，
+            # 否则 hist 里没有 stage / zb_r，实时日的状态机就推不下去（静默降级）。
+            # 需要上证指数序列作相对强度基准，故 index_pct 先于本段计算。
+            _ipx = {}
+            for _nm, _mm in (iser or {}).items():
+                _ipx[_nm] = {_d: _r.get("pct") for _d, _r in (_mm or {}).items()
+                             if isinstance(_r.get("pct"), (int, float))}
+            attach_board_phases(boards_by_date, dates, index_pct=_ipx)
             board_hist = board_history_from_daily(boards_by_date, dates,
                                                   [b["code"] for b in bl])
 
@@ -3461,7 +3922,11 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
                                       date_str=date_str, roles_ctx=_rctx,
                                       roles_members=_rmem,
                                       concept_codes=_ccodes,
-                                      index_pct=index_pct)
+                                      index_pct=index_pct,
+                                      # V1.009.7 情绪周期：炸板池算「板块炸板率」，
+                                      # 昨日涨停今日表现算「晋级率 / 接力溢价 / 断板数」
+                                      zb_pool=list(zb.get("stocks") or []),
+                                      prev_perf=prev_perf)
         except Exception as e:  # noqa: BLE001
             concept = {"available": False, "note": "概念板块采集失败：%s" % e}
     elif ctx_boards:
@@ -3723,6 +4188,30 @@ def build_daily_markdown(snap: dict) -> str:
                          cp.get("weak") or 0,
                          "-" if cp.get("median_pct") is None else "%.2f" % cp["median_pct"],
                          "-" if cp.get("temperature") is None else "%.1f" % cp["temperature"]))
+        # 风控清单（V1.009.7）：今日处于「高潮 / 分歧」的板块。
+        # 它是阶段标签**最强**的用途 —— 实测「高潮」组次日跌超 3% 的概率 15.5%
+        # （发酵的 2 倍、退潮的 6 倍，且是唯一均值为负的组）。回答的是「持仓要不要
+        # 撤、空仓要不要忍」，不是「买什么」。
+        _pl = cp.get("phase_list") or []
+        if _pl:
+            lines.append("")
+            lines.append("**⚠️ 情绪周期风控清单（今日处于高潮 / 分歧的板块）**")
+            lines.append("")
+            lines.append("| 概念板块 | 阶段 | 涨跌幅 | 涨停家数 | 最高连板 | 判定依据 |")
+            lines.append("| --- | --- | --- | --- | --- | --- |")
+            for x in _pl[:12]:
+                lines.append("| %s | %s | %s%% | %d | %s | %s |" % (
+                    x.get("name"), x.get("stage"),
+                    "-" if x.get("pct") is None else "%+.2f" % x["pct"],
+                    x.get("zt") or 0,
+                    ("%d板" % x["lbc_max"]) if x.get("lbc_max") else "-",
+                    x.get("reason") or "-"))
+            lines.append("")
+            lines.append("> 高潮 = 出现 ≥%d 板高标、或涨停强度进全市场最前且扩散度高；"
+                         "分歧 = 龙头首阴（最高板不再走高）＋炸板率异常上升或断板 ≥2。"
+                         "两者都是**风控信号**，不是买入信号：高潮持仓应分批止盈、做好随时撤退准备，"
+                         "空仓不宜追涨；分歧应减仓、只留最强龙头。"
+                         % (cp.get("phase_peak_h") or 4))
         if cp.get("main_lines"):
             lines.append("")
             lines.append("**主线题材与周期阶段**")
@@ -4014,8 +4503,12 @@ AI_PROMPT = """你是一位专业的 A 股短线交易教练，请根据以下�
    以及**两市成交额较昨日的增减**（放量/缩量对情绪的含义）反映了什么；
 2. 概念板块情绪周期（重点，结合"五、概念板块情绪周期"章节）：
    ① 当日题材活跃度——强势板块（涨幅>2%）与弱势板块（跌幅>2%）的数量对比、板块涨幅中位数；
-   ② 主线题材是谁（涨停贡献榜 + 涨幅榜），各自处于什么周期阶段（冰点/启动/发酵/高潮/退潮/震荡），
-      依据是涨停家数变化、板块涨跌幅、连板高度与持续时间；
+   ② 主线题材是谁（涨停贡献榜 + 涨幅榜），各自处于什么周期阶段
+      （潜伏/启动/发酵/高潮/分歧/退潮/冰点），
+      依据是连板梯队（最高板、连板家数、断板数）、赚钱效应（晋级率、接力溢价、炸板率）
+      与板块涨跌幅；
+      特别注意「⚠️ 情绪周期风控清单」里处于高潮 / 分歧的板块 —— 对它们是风险提示
+      （高潮：持仓准备撤退、空仓不追；分歧：减仓只留龙头），不是推荐；
    ③ 题材轮动与退潮迹象——哪些题材在退潮、哪些在启动、有无高低切换或主线扩散；
 3. 严重异动与风险（结合"六、严重异动提醒"）：指出高偏离标的所处的梯队位置，
    提示追高风险与可能触发交易所核查的情形；
