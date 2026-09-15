@@ -1160,7 +1160,6 @@ def board_roles_daily(members_map: dict, ctx: dict, date: str,
 
 _THEME_W = {"focus": 0.30, "persist": 0.30, "height": 0.30, "capacity": 0.10}
 _THEME_WIN = 5              # 持续性回看窗口（交易日）
-_THEME_TOP = 15             # 当日涨停家数进全市场概念前 N 名才算"在榜"
 _THEME_DECAY = [1.0, 0.8, 0.6, 0.4, 0.2]   # 近端加权，索引 0 = 最近一日
 _THEME_ADAPT_STD = 0.05     # 维度在候选池内标准差低于此值 → 无区分力，权重转移
 _THEME_QUAL_RATIO = 2.0     # 资格线：涨停占板块比 >= 2%
@@ -1168,6 +1167,58 @@ _THEME_QUAL_PCT_Q = 0.95    # 资格线：板块涨幅 >= 全市场概念 95 分
 _THEME_CORE = 0.66          # 核心主线分数阈值（唯一判据，无 TOP3 兜底，见 _theme_score）
 _THEME_SUB = 0.40           # 次级主线阈值
 _THEME_MAX1 = 12            # 输出上限
+
+# ---- V1.009.6：持续性口径重写（取代「涨停家数进全市场前 15」）----
+# 旧口径（_THEME_TOP=15）的硬伤是**规模歧视**：它把 20 只成分股的板块和 985 只的板块
+# 放进同一张「涨停家数」榜比较。实测候选池里 persist>0 的板块，成分股数最小 98 只；
+# 按成分股数对半切后，小板块（<=42 只）的 persist>0 命中率是 **0.0%** —— 20 只的培育钻石
+# 要冲进全市场涨停家数前 15，需要 7~9 家涨停（35~45% 的涨停率），数学上不可能；
+# 而 985 只的央国企改革只要 0.9%。同一个门槛，两个板块的含义差 50 倍。
+# 后果：09-14 涨幅榜第 1 / 第 2 名（CRO +4.54% / 培育钻石 +4.48%）持续性得 0 分，
+# 分别掉到候选池第 40 / 58 名；涨幅榜前 20 里只有 2 个进了主线表。
+#
+# 新口径把「在榜日」定义为一个**与成分股数量无关的复合条件**（用户 2026-09-15 提出）：
+#   a) 板块涨幅 > 上证指数涨幅   —— 相对强度（跑赢大盘）
+#   b) 板块内有涨停              —— 有龙头
+#   c) 上涨家数 > 成分股数×60%   —— 板块整体性（普涨，而非一两只拉指数）
+# 三条同时成立才算「在榜」。三个判据用的都是比例 / 相对量，规模歧视消失。
+#
+# ⚠️⚠️ 为什么**不能**再乘覆盖度（V1.009.5 的 `× 命中天数/窗口`）——这里踩过大坑：
+# 那层乘子是为**旧定义**校准的：旧定义下真主线能连续 5 天在榜拿 1.0，乘覆盖度用来压
+# 一日游。但新定义严到 **65 天里没有任何板块能连续 3 天满足**（55%/60%/65%/70%/75%/80%
+# 六个阈值下「>=3 天」全部为 0），加权率最大值只有 ~0.47，再乘 0.2~0.4 的覆盖度
+# → 全部压到 0.07 附近 → 候选池内标准差 0.0489 < _THEME_ADAPT_STD
+# → **被自适应权重判为「无区分力」并归零**，整个改动等于没做
+# （实测 persist 权重变成 0.0，培育钻石仍是第 53 名，与改前几乎一样）。
+# 去掉乘子后：标准差 0.1626、65/65 天全部存活、培育钻石 0.0000 → 0.4667。
+# 教训：**乘性惩罚的标定依赖上游定义的值域**，换定义必须重新标定，否则会静默失效。
+_PERSIST_UP_RATIO = 0.60    # 持续性条件 c：上涨家数 / 成分股数 的阈值
+
+# ---- 资金容量 = 涨停股成交额 + 板块涨幅，各取候选池内分位后加权 ----
+# 为什么必须并进板块涨幅：amt 只统计**涨停**股，会把「接近涨停的大涨股」整段漏掉。
+# 实测 09-14 培育钻石：实际涨停/大涨股成交额近百亿（黄河旋风 48.93 亿、四方达 28.51 亿、
+# 力量钻石 22.56 亿、英诺激光 14.95 亿），系统只算出 3.56 亿 —— 差 30 倍，
+# 于是容量分位只有 0.119，把一个近百亿资金流入的板块判成「上不了仓位」。
+# 板块涨幅由**全部成分股等权平均**得出（见 rebuild_board_daily 的口径标定），
+# 正好补上这块被漏掉的资金强度。
+# 配比标定（09-14 实测，amt 权重 w）：w=1.0 → 培育钻石 #17/CRO #16（都不进前 12）；
+# w=0.5 → #7/#13；**w=0.4 → #7/#11（两者都进）**；w=0.2 → #6/#10。
+# 取 0.4 而非 0：amt 仍占主导，保住「涨停股流动性够不够上仓位」这个原本的语义。
+_CAP_AMT_W = 0.4
+
+# ---- 今日启动信号（V1.009.6 新增，方案 A）----
+# 四维打分里**历史组占 60%**（持续性 + 空间高度都靠时间积累），所以模型系统性偏好
+# 「已确立 3~5 天的主线」，对「启动首日 / 重启首日」的题材在结构上给不了高分。
+# 但这个信号恰恰是右侧交易者最需要的买点 —— 启动第一天常是最好的右侧介入点，
+# 而模型恰在这天给它最低分。
+# 因此单列一条**不参与持续性/高度排序**的信号，只回答「今天资金去了哪个新方向」：
+# 它不改变主线表，避免一日游题材污染主线判断（用户明确要求两者分开）。
+# 实测 09-14 命中 8 个：CRO(+4.54%/4.1%)、培育钻石(+4.48%/5.0%)、VPN(+3.58%/5.3%)、
+# MLCC(+3.31%/5.1%)、汽车整车(+2.81%/13.0%)、复合集流体(+2.26%/3.3%)、
+# 数据安全(+2.22%/4.9%)、PCB(+2.19%/4.0%)。
+_EMERGING_TOP = 20          # 板块涨幅进全市场概念前 N 名
+_EMERGING_RATIO = 3.0       # 且 涨停占板块比 >= 3%
+_FIRSTDAY_LOOKBACK = 10     # 「首日启动」判定：近 N 个交易日内没有过「在榜日」
 
 
 def _rank_pct(pairs: list) -> dict:
@@ -1213,57 +1264,166 @@ def _hist_dates(hist: dict | None, date_str: str | None, win: int) -> list[str]:
     return sorted(ds)[-max(1, int(win)):]
 
 
-def _daily_rank_map(hist: dict | None, dates: list) -> dict:
-    """{date: {code: (当日涨停家数排名 1-based, 当日涨停家数)}} —— 持续性维度用
+def _day_index(hist: dict | None, dates: list) -> dict:
+    """{date: {code: {pct, zt, up, size}}} —— 持续性三条件判定的统一日截面
 
-    hist 存的是**全部概念板块**的每日序列（504 个），所以每日横截面排名可以现算，
-    零网络成本。同一日按 (涨停家数 ↓, 涨跌幅 ↓) 定序。
+    hist 存的是**全部概念板块**的每日序列（504 个），所以每日截面可以现算，零网络成本。
 
-    值里同时带 zt：**名次必须与 zt>0 联合成立**。只看名次会出问题 ——
-    冰点日全市场最高才 2 家涨停时，"前 15 名"里会混进一堆 0 涨停的板块，
-    白送持续性分。
-
-    伪板块（"昨日涨停" / "昨日连板" / 区域 / 估值风格…）必须从**排名集**里剔掉：
-    "昨日涨停"的成分股按定义就是昨日全部涨停股，其涨停家数每天都是全市场最高，
-    于是它常年霸占第 1 名，把 top-15 里 4 个名额（含 _含一字 的两个变体）固定占掉，
-    真正的题材被整体挤低一名 —— 持续性的排名基准就被污染了。
+    伪板块（"昨日涨停" / "昨日连板" / 区域 / 估值风格…）必须整片剔掉：
+    "昨日涨停"的成分股按定义就是昨日全部涨停股，其涨停家数/上涨家数每天都是全市场最高，
+    于是它天天满足三条件、常年霸榜，把真正的题材整体压低。
     name 缺失时**不剔**（旧 hist 没这个字段，宁可少剔也不要把整表剔空）。
     """
-    want = set(dates)
-    bucket: dict = {}
+    want = set(dates or [])
+    out: dict = {}
     for code, seq in (hist or {}).items():
         for row in seq:
             d = row.get("date")
-            if d in want:
-                _nm = row.get("name")
-                if _nm and _is_noise_board(_nm):
-                    continue
-                _p = row.get("pct")
-                bucket.setdefault(d, []).append(
-                    (code, int(row.get("zt") or 0),
-                     _p if isinstance(_p, (int, float)) else -999.0))
-    out: dict = {}
-    for d, rows in bucket.items():
-        rows.sort(key=lambda x: (-x[1], -x[2]))
-        out[d] = {c: (i + 1, z) for i, (c, z, _) in enumerate(rows)}
+            if d not in want:
+                continue
+            _nm = row.get("name")
+            if _nm and _is_noise_board(_nm):
+                continue
+            out.setdefault(d, {})[code] = {
+                "pct": row.get("pct"),
+                "zt": int(row.get("zt") or 0),
+                "up": int(row.get("up") or 0),
+                "size": int(row.get("size") or 0),
+            }
     return out
 
 
-def _persist_score(rank_map: dict, code: str, dates: list, top_k: int) -> tuple:
-    """近 win 日「有涨停 且 涨停家数进前 top_k」的天数，近端加权归一化 → (分数, 命中天数)
+def _today_day_rows(boards: list, size_map: dict, zt_map: dict | None = None) -> dict:
+    """当日实盘板块行 → {code: {pct, zt, up, size}}，用于覆写 _day_index 的当日槽
+
+    为什么当日必须用实盘 boards 而不是 hist：hist 是上次重建的产物，通常**不含今天**
+    （重建一般覆盖到昨日）。若只看 hist，当日永远不计入在榜天数 —— 每一天的持续性
+    都少算一天，而且是静默少算（不报错、只是分数偏低）。
+
+    ⚠️ `zt` 必须由调用方用 zt_map 补进来：**实时板块行（东财 clist）没有涨停家数字段**
+    （`_board_row` 只有 up/down/flat 等），涨停家数是另由「涨停股 → 所属概念」映射
+    算出来的（见 concept_emotion 里的 contrib）。少这一环的后果是条件 b「有涨停」
+    在实时路径恒为假 → 实时日的持续性恒为 0，而历史重建日正常 —— 又是一个静默分叉。
+    重建路径的 boards 行自带 zt，走 fallback 即可。
+    """
+    out: dict = {}
+    zt_map = zt_map or {}
+    for b in (boards or []):
+        nm = b.get("name")
+        if nm and _is_noise_board(nm):
+            continue
+        code = b.get("code")
+        if not code:
+            continue
+        _zt = zt_map.get(code)
+        if _zt is None:
+            _zt = b.get("zt")
+        if _zt is None:          # 兜底：实时行退化为 count（通常也没有，则记 0）
+            _zt = b.get("count")
+        out[code] = {
+            "pct": b.get("pct"),
+            "zt": int(_zt or 0),
+            "up": int(b.get("up") or 0),
+            # ⚠️ 条件 c 的分母必须与 hist.size 同口径 —— hist 里 size = count（当日有效
+            # 成分股数）。重建行的 size_map = up+down（**缺平盘**）会比 count 小，
+            # 若当日用 size_map、历史用 count，条件 c 在两条路径上就是两个尺度，
+            # 阈值 60% 的含义会漂移。所以优先取 count；实时行没有 count，
+            # 但 size_map = up+down+flat 恰好等于 count，天然一致。
+            "size": int(b.get("count") or b.get("size") or size_map.get(code) or 0),
+        }
+    return out
+
+
+def _onboard(day_idx: dict, code: str, d: str, sh_map: dict | None,
+             up_ratio: float | None = None) -> bool:
+    """该板块在该日是否「在榜」：a) 涨幅 > 上证 且 b) 有涨停 且 c) 上涨家数 > 成分股×60%
+
+    sh_map 缺失该日时（指数序列未覆盖）退化为「涨幅 > 0」，**不判 False** ——
+    判 False 会让整段持续性静默归零，那是最难发现的一类失效。
+    """
+    row = (day_idx.get(d) or {}).get(code)
+    if not row:
+        return False
+    pct = row.get("pct")
+    if not isinstance(pct, (int, float)):
+        return False
+    sh = (sh_map or {}).get(d)
+    if not isinstance(sh, (int, float)):
+        sh = 0.0
+    if pct <= sh:                       # a 相对强度：跑赢上证
+        return False
+    if int(row.get("zt") or 0) <= 0:    # b 有龙头
+        return False
+    size = int(row.get("size") or 0)
+    up = int(row.get("up") or 0)
+    th = _PERSIST_UP_RATIO if up_ratio is None else up_ratio
+    return size > 0 and up > size * th  # c 板块整体性：普涨而非一两只拉指数
+
+
+def _onboard_set(day_idx: dict, d: str | None, sh_map: dict | None,
+                 up_ratio: float | None = None) -> set:
+    """某日全市场「在榜」板块代码集合 —— 主线切换信号与持续性必须用同一把尺子"""
+    if not d:
+        return set()
+    return {c for c in (day_idx.get(d) or {})
+            if _onboard(day_idx, c, d, sh_map, up_ratio)}
+
+
+def _firstday_info(day_idx: dict, code: str, dates: list, sh_map: dict | None,
+                   date_str: str | None = None, zt_today: int | None = None) -> dict:
+    """近 N 日在榜情况 → {onboard_recent, first_day, [zt, launch]}
+
+    口径（V1.009.6）：以 `date_str` 为界，**只看此前** _FIRSTDAY_LOOKBACK 个交易日。
+      onboard_recent = 此前在榜天数
+      first_day      = 此前从未在榜 → 今天第一次以「有涨停 + 跑赢大盘 + 普涨」的形态出现
+
+    用来把「资金第一次选中这个新方向」与「已经发酵过几天、今天只是延续」分开 ——
+    两者的操作含义完全不同（前者是右侧第一买点，后者是追高）。
+
+    ⚠️⚠️ 必须把**当日从窗口里剔掉**（`d < date_str`）。曾经把当日算进去，后果是
+    「今天首次在榜」得到 hits=1 → 判为「不是首日」，正好把最该提示的「真·启动首日」
+    漏掉：只有从未在榜的板块才会显示首日，语义是反的。
+    实测 09-14 修正后，VPN / 减肥药 / 基因测序 这类「今日才首次在榜」的板块能正确
+    显示为首日（修正前被误判为否）。
+
+    `zt_today` 传入时额外产出**展示用三态** `launch`（口径收口在这里，避免前端自己
+    再推一遍规则）：把「首日」的成立条件与「本系统以涨停为攻击证据」这件事对齐 ——
+      「首日」  = 此前无在榜日 且 今日有涨停
+      「延续」  = 此前有在榜日
+      「无涨停」= 今日 0 涨停 → 启动/延续**都不判定**。
+    否则 0 涨停的板块（在榜条件 b 天然不成立 → onboard_recent 恒为 0）会被永久标成
+    「首日启动」，实测 09-14 会误标 CAR-T细胞疗法 / 电子纸概念 / 青蒿素 这类
+    「涨幅高但无人封板」的板块，按此标签交易是错误信号。
+    """
+    before = sum(1 for d in dates
+                 if (not date_str or d < date_str)
+                 and _onboard(day_idx, code, d, sh_map))
+    out = {"onboard_recent": before, "first_day": before == 0}
+    if zt_today is not None:
+        _zt = int(zt_today or 0)
+        out["zt"] = _zt
+        out["launch"] = "无涨停" if _zt <= 0 else ("首日" if before == 0 else "延续")
+    return out
+
+
+def _persist_score(day_idx: dict, code: str, dates: list,
+                   sh_map: dict | None = None) -> tuple:
+    """近 win 日「在榜日」的近端加权得分 → (分数, 命中天数)
 
     这是唯一能区分「一日游」与「真主线」的维度：
-    一日游板块今天 6 家涨停但前面几天都不在榜 → 分数极低；
-    连续 5 天在榜的板块 → 1.0。
+    一日游板块今天满足三条件但前面几天都不在榜 → 分数低；
+    连续 5 天在榜（实测极罕见，65 天里没有板块做到 3 天）→ 接近 1.0。
 
-    两个条件缺一不可：光有 zt>0 会让"每天 1 家涨停"的平庸板块混满分；
-    光有名次会在冰点日把 0 涨停的板块也算成在榜。
+    ⚠️⚠️ **绝对不能乘覆盖度**（V1.009.5 的 `× 命中天数/窗口`）。
+    那层乘子是为**旧定义**（涨停家数进全市场前 15）校准的：旧定义下真主线能连续
+    5 天在榜拿满 1.0，乘覆盖度用来把一日游从 0.33 压到 0.067。
+    但新三条件定义严到 65 天里没有任何板块能连续 3 天满足，加权率最大值只有 ~0.47，
+    再乘 0.2~0.4 的覆盖度 → 全部候选被压到 0.07 附近 → 候选池内标准差 0.0489
+    < _THEME_ADAPT_STD → **被自适应权重判为「无区分力」并归零**，整个改动静默失效
+    （实测 persist 权重变成 0.0，培育钻石仍排第 53 名，与改前几乎一样）。
+    去掉乘子后标准差 0.1626、65/65 天全部存活、培育钻石 0.0000 → 0.4667。
 
-    分值 = 近端加权命中率 × 覆盖度（命中天数 / 窗口）：
-    单用加权命中率会给一日游虚高的分 —— 近端权重 1.0 占到总权重 1/3，
-    于是"只在今天在榜"能拿 0.33，与真主线的 1.0 只差 3 倍，区分度不足。
-    乘上覆盖度后：连续 5 天 = 1.0，一日游 = 0.33 × 1/5 = 0.067（差 15 倍），
-    断了 1 天的 4/5 主线 ≈ 0.93 × 0.8 = 0.75 —— 频率与覆盖都照顾到了。
+    值域：最近两日都命中 = 1.0；只今日命中 = 0.3333；只 5 日前命中 = 0.0667。
     """
     if not dates:
         return 0.0, 0
@@ -1273,12 +1433,10 @@ def _persist_score(rank_map: dict, code: str, dates: list, top_k: int) -> tuple:
     got = 0.0
     hits = 0
     for i, d in enumerate(reversed(use)):     # i=0 → 最近一日
-        cell = (rank_map.get(d) or {}).get(code)
-        if cell and cell[0] <= top_k and cell[1] > 0:
+        if _onboard(day_idx, code, d, sh_map):
             got += _THEME_DECAY[i]
             hits += 1
-    cover = (hits / float(win)) if win else 0.0
-    return round(got / tot * cover, 4), hits
+    return round(got / tot, 4), hits
 
 
 def _height_score(lbc_max, lbc2) -> float:
@@ -1321,40 +1479,54 @@ def _std(vals: list) -> float:
     return (sum((x - m) ** 2 for x in vals) / len(vals)) ** 0.5
 
 
-def _theme_score(cands: list, hist: dict | None, dates: list) -> tuple:
+def _theme_score(cands: list, day_idx: dict, dates: list,
+                 sh_map: dict | None = None) -> tuple:
     """候选池 → 四维打分 + 分级 → (打分排序后的列表, 实际权重)
 
     自适应权重：某维在候选池内的标准差 < _THEME_ADAPT_STD 时（如今天所有候选都
     只有 1 只涨停，聚焦度全一样），该维没有区分力，权重按比例转移给其余维度，
     避免"无信息的维度"稀释分数。全部维度都无区分力时保持原权重不变。
+
+    ⚠️ 连续性与这个自适应机制互相牵制：持续性一旦被压到低值域且扎堆，就会静默
+    被判死。改持续性口径时必须复算它的候选池内标准差（详见 _PERSIST_UP_RATIO 注释）。
     """
     if not cands:
         return [], {}
-    rank_map = _daily_rank_map(hist, dates)
-
     raw = {"focus": [], "persist": [], "height": [], "capacity": []}
+    pct_raw: list = []
     meta: dict = {}
     for c in cands:
         code = c["code"]
         _r = c.get("ratio")
         focus_v = float(_r) if isinstance(_r, (int, float)) else 0.0
-        p_score, p_hits = _persist_score(rank_map, code, dates, _THEME_TOP)
+        p_score, p_hits = _persist_score(day_idx, code, dates, sh_map)
         h_v = _height_score(c.get("lbc_max"), c.get("lbc2"))
         _a = c.get("amt")
         cap_v = float(_a) if isinstance(_a, (int, float)) else 0.0
+        _p = c.get("pct")
         raw["focus"].append((code, focus_v))
         raw["persist"].append((code, p_score))
         raw["height"].append((code, h_v))
         raw["capacity"].append((code, cap_v))
+        pct_raw.append((code, float(_p) if isinstance(_p, (int, float)) else -999.0))
         meta[code] = {"persist_days": p_hits, "focus": round(focus_v, 2),
                       "height": round(h_v, 4), "capacity": round(cap_v, 0)}
+
+    # 资金容量 = 涨停股成交额(0.4) + 板块涨幅(0.6)，两者各取候选池内分位后加权。
+    # 板块涨幅由**全部成分股等权平均**得出，补上 amt 漏掉的「接近涨停的大涨股」：
+    # 实测 09-14 培育钻石只算涨停股成交额 3.56 亿（实际近百亿），容量分位仅 0.119，
+    # 并入涨幅后 → 0.554，排名从第 17 名升到第 7 名（配比标定见 _CAP_AMT_W）。
+    amt_r = _rank_pct(raw["capacity"])
+    pct_r = _rank_pct(pct_raw)
+    _cap = {k: round(_CAP_AMT_W * amt_r.get(k, 0.0)
+                     + (1.0 - _CAP_AMT_W) * pct_r.get(k, 0.0), 4) for k in amt_r}
 
     # 聚焦度与容量取候选池内分位；持续性与高度本身已是 0~1 的绝对分
     dim = {
         "focus": _rank_pct(raw["focus"]),
         "persist": dict(raw["persist"]),
         "height": dict(raw["height"]),
-        "capacity": _rank_pct(raw["capacity"]),
+        "capacity": _cap,
     }
     vals = {k: [dim[k].get(c["code"], 0.0) for c in cands] for k in dim}
     w = dict(_THEME_W)
@@ -1433,18 +1605,21 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                     date_str: str | None = None,
                     roles_ctx: dict | None = None,
                     roles_members: dict | None = None,
-                    concept_codes: set | None = None) -> dict:
+                    concept_codes: set | None = None,
+                    index_pct: dict | None = None) -> dict:
     """概念板块每日情绪周期分析（V1.009.1 核心）
 
     boards: 概念板块全量（当日实时 / 历史重建结果均可）
     zt_stocks: 当日涨停个股（实时口径）；留空则用 board 行自带的涨停家数（历史重建口径）
-    hist: 可选 {板块代码: [{date,pct,zt}, ...]} 近 N 日序列，用于周期阶段与主线持续性
+    hist: 可选 {板块代码: [{date,pct,zt,up,size}, ...]} 近 N 日序列，用于周期阶段与主线持续性
     date_str: 当日日期（用于把当日并入历史序列）
     roles_ctx / roles_members: 个股角色分层（龙头/中军/跟风/补涨）所需的两个数据源 ——
       roles_ctx     = {"pct","lim","extra"}，历史走 roles_ctx_build、实时走 roles_ctx_live
       roles_members = {板块代码: {"name","members":[{code,name,mktcap}]}}
     只对进入「主线题材」的板块计算（控制快照体积）；缺任一者则该字段为空。
     concept_codes: 概念全集（实时路径必须传，见 _zt_concept_contrib）
+    index_pct: {指数名: {日期: 涨跌幅%}} —— 持续性条件 a「板块涨幅 > 上证指数」的基准。
+      缺失时条件 a 退化为「涨幅 > 0」（_onboard 内处理），不判 False、不静默归零。
     """
     if not boards:
         return {"available": False, "total": 0,
@@ -1503,6 +1678,12 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                                     -(x["pct"] if isinstance(x["pct"], (int, float)) else -99)))
         src = "rebuild"
 
+    # {code: 涨停家数} —— **实时板块行（东财 clist）没有涨停家数字段**，涨停家数一律
+    # 由涨停贡献榜给出。下面凡是要用当日涨停家数的地方（当日日截面、今日启动信号）
+    # 都必须过这个映射，否则实时日会静默取到 0：条件 b「有涨停」恒假 → 实时日持续性
+    # 恒为 0，而历史重建日正常，形成一条只在实时路径出现、不报错的分叉。
+    _zt_cnt = {c["code"]: int(c.get("count") or 0) for c in contrib}
+
     # ---- 主线题材：资格线筛池 → 四维打分 → 分级（V1.009.5 取代旧的"取前 N 名"）----
     # 涨幅 >= 全市场概念的 95 分位（资格线条件③用）
     _pct_all = sorted([b["pct"] for b in boards if isinstance(b.get("pct"), (int, float))])
@@ -1522,7 +1703,7 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
         seen_c.add(b["code"])
         cand_all.append({
             "code": b["code"], "name": b["name"], "pct": b["pct"],
-            "count": int(b.get("zt") or 0),
+            "count": int(_zt_cnt.get(b["code"], b.get("zt")) or 0),
             "lbc_max": int(b.get("lbc_max") or 0),
             "lbc2": int(b.get("lbc2") or 0),
             "amt": b.get("amt") or 0,
@@ -1536,9 +1717,51 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
     if not cand:
         cand = [c for c in cand_all if not _is_noise_board(c.get("name"))][:3]
 
-    dates_use = _hist_dates(hist, date_str, _THEME_WIN)
-    scored, theme_w = _theme_score(cand, hist, dates_use)
+    # 历史日截面一次取够 —— 「首日启动」标注要看近 _FIRSTDAY_LOOKBACK 日，
+    # 持续性只看末 _THEME_WIN 日；共用同一份索引，避免重复遍历 504 个板块的序列。
+    _hist_days = _hist_dates(hist, date_str, _FIRSTDAY_LOOKBACK)
+    day_idx = _day_index(hist, _hist_days)
+    if date_str:
+        # 当日用实盘 boards 覆写（hist 通常不含今天，见 _today_day_rows 注释）
+        day_idx[date_str] = _today_day_rows(boards, size_map, _zt_cnt)
+    sh_map = (index_pct or {}).get("上证指数") or {}
+    dates_use = _hist_days[-_THEME_WIN:]
+    scored, theme_w = _theme_score(cand, day_idx, dates_use, sh_map)
     main: list[dict] = scored[:_THEME_MAX1]
+
+    # 涨幅榜标注「首日启动」（V1.009.6）—— 只看此前的在榜历史，当日不计入
+    # ⚠️ 同时把当日**真实涨停家数**写进行里：涨幅榜行来自原始实时板块行，而实时行
+    # 没有 zt 字段，前端若自己取 b.zt 会恒为 0，「首日/延续/无涨停」三态就永远
+    # 落到「无涨停」。这里用 _zt_cnt 统一补齐（与当日日截面同一份映射）。
+    _tu_src, top_up = top_up, []
+    for b in _tu_src:
+        _z = int(_zt_cnt.get(b["code"], b.get("zt")) or 0)
+        _r = dict(b, zt=_z)
+        _r.update(_firstday_info(day_idx, b["code"], _hist_days, sh_map, date_str,
+                                 zt_today=_z))
+        top_up.append(_r)
+
+    # 今日启动（V1.009.6，方案 A）：涨幅进全市场概念前 _EMERGING_TOP 且涨停占比
+    # >= _EMERGING_RATIO 的板块**单列**。它不参与持续性/高度排序、不进主线表 ——
+    # 目的是补上「启动首日 / 重启首日」这个四维打分的结构性盲区（历史组占 60%，
+    # 新启动题材结构上拿不到高分），同时不让一日游题材污染主线判断。
+    # in_main 标记它是否已同时进主线表，前端据此区分展示。
+    # ⚠️ 当日涨停家数走 _zt_cnt（实时板块行没有 zt 字段，直接取会恒为 0）
+    _top_by_pct = sorted([b for b in ranked if not _is_noise_board(b.get("name"))],
+                         key=lambda x: -x["pct"])[:_EMERGING_TOP]
+    _main_codes = {m["code"] for m in main}
+    emerging = []
+    for b in _top_by_pct:
+        _esz = size_map.get(b["code"]) or 0
+        _ezt = int(_zt_cnt.get(b["code"], b.get("zt")) or 0)
+        _eratio = (_ezt / _esz * 100) if _esz else 0.0
+        if _eratio < _EMERGING_RATIO:
+            continue
+        emerging.append({
+            "code": b["code"], "name": b["name"], "pct": b.get("pct"),
+            "zt": _ezt, "ratio": round(_eratio, 1), "size": _esz,
+            "in_main": b["code"] in _main_codes,
+        })
 
     main_lines = []
     for m in main:
@@ -1618,20 +1841,19 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
     def _nm_of(c):
         return (bmap.get(c) or {}).get("name") or c
 
-    # 昨日"在榜"集合：上一交易日涨停家数进全市场概念前 _THEME_TOP 名的板块（且 >=2 家）
+    # 「在榜」= 持续性三条件当日成立（a 涨幅>上证 ∧ b 有涨停 ∧ c 上涨家数>成分股×60%）
+    # —— 必须与持续性维度用**同一把尺子**，否则「进/出名单」与「持续性得分」互相矛盾。
+    # 注意：新口径的在榜集合明显大于旧的「涨停家数前 15」（实测 09-14 全市场 86 个
+    # vs 旧口径最多 15 个），所以 drop 靠下面的 [:8] 截断控制展示量。
     prev_codes: set = set()
     _prev_z: dict = {}
     prev_date = dates_use[-2] if len(dates_use) >= 2 else None
     if prev_date:
-        _rk = (_daily_rank_map(hist, [prev_date]) or {}).get(prev_date) or {}
-        prev_codes = {c for c, cell in _rk.items()
-                      if cell[0] <= _THEME_TOP and cell[1] >= 2}
-        _prev_z = {c: cell[1] for c, cell in _rk.items()}
-    # 今日"在榜"集合（drop 的对照基准，见下）
-    _rk_today = ((_daily_rank_map(hist, dates_use[-1:]) or {}).get(dates_use[-1]) or {}
-                 if dates_use else {})
-    today_on = {c for c, cell in _rk_today.items()
-                if cell[0] <= _THEME_TOP and cell[1] >= 2}
+        prev_codes = _onboard_set(day_idx, prev_date, sh_map)
+        _prev_slot = day_idx.get(prev_date) or {}
+        _prev_z = {c: int((_prev_slot.get(c) or {}).get("zt") or 0) for c in prev_codes}
+    # 今日「在榜」集合（drop 的对照基准，见下）
+    today_on = _onboard_set(day_idx, dates_use[-1], sh_map) if dates_use else set()
 
     # 进出两个名单**必须用同一把尺子**，否则名单长度会悬殊到没法看。
     # 原来 new 取"今日核心「减去」昨日在榜"（严进），drop 取"昨日在榜「减去」今日核心"
@@ -1658,6 +1880,16 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
         "theme_qualified_total": len(scored),
         "pct_q95": (round(pct_q, 2) if isinstance(pct_q, (int, float)) else None),
         "theme_win": len(dates_use),
+        # 资金容量的内部配比（V1.009.6）：涨停股成交额 : 板块涨幅 = w : 1-w
+        "theme_cap_amt_w": _CAP_AMT_W,
+        # 在榜三条件的阈值（V1.009.6）—— 下发到前端，避免 TIP 文案里写死数字后
+        # 与后端常量脱钩（改口径只改实现、忘了改文案是最容易漏的一处）
+        "theme_persist_up_ratio": _PERSIST_UP_RATIO,
+        "theme_firstday_lookback": _FIRSTDAY_LOOKBACK,
+        "theme_emerging_top": _EMERGING_TOP,
+        "theme_emerging_ratio": _EMERGING_RATIO,
+        # 今日启动信号（V1.009.6）：与主线表互相独立，不做排序过滤
+        "emerging": emerging,
         "mains_count": n_core,
         "market_state": mstate,
         "market_state_note": mstate_note,
@@ -2460,11 +2692,15 @@ def board_history_from_daily(board_daily: dict, dates: list[str],
                              codes: list[str]) -> dict:
     """从每日板块聚合结果提取指定板块的近 N 日序列
 
-    → {code: [{date,pct,zt,size,ratio,lbc_max,lbc2,amt}, ...]}
+    → {code: [{date,pct,zt,up,size,ratio,lbc_max,lbc2,amt}, ...]}
 
     V1.009.5 起带上聚焦度 / 空间高度 / 资金容量：主线题材的四维打分在**历史日期**
     必须与实时同口径，否则回看过去的主线排名会发生跳变（涨跌停口径刚统一过，
     这里不该再留一个跨口径不一致）。
+
+    V1.009.6 起补 `up`（上涨家数）：持续性新口径的条件 c「上涨家数 > 成分股×60%」
+    要用它。`rebuild_board_daily` 一直在算 up，只是**没落库** —— 故本版必须重建历史
+    序列才能让历史日期也满足条件 c（只换代码不重建 → 历史日在榜天数偏少，且不报错）。
 
     ratio 用**当日有效成分股数**（count，停牌股会改变当日基数）算，不用静态板块规模。
     """
@@ -2478,11 +2714,13 @@ def board_history_from_daily(board_daily: dict, dates: list[str],
             _sz = int(b.get("count") or 0)
             out[c].append({
                 "date": d,
-                # name 只为「排名时剔除伪板块」服务（hist 只有 code，没有名字，
+                # name 只为「剔伪板块」服务（hist 只有 code，没有名字，
                 # 而 _is_noise_board 是按名字判定的）。
                 "name": b.get("name"),
                 "pct": b.get("pct"),
                 "zt": _zt,
+                # 上涨家数（V1.009.6）：持续性条件 c 用。
+                "up": int(b.get("up") or 0),
                 "size": _sz,
                 "ratio": (round(_zt / _sz * 100, 1) if _sz else None),
                 "lbc_max": int(b.get("lbc_max") or 0),
@@ -2920,7 +3158,8 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
                             "pct": rec.get("pct"), "volume": rec.get("volume")})
         concept = concept_emotion(boards_by_date.get(d) or [], None, board_hist, date_str=d,
                                   roles_ctx=board_ctx.get("ctx"),
-                                  roles_members=mem)
+                                  roles_members=mem,
+                                  index_pct=index_pct)
         cov = (breadth[d]["total"] + len(zt_list) + len(dt_list))
         note = ("历史重建口径：涨跌分布 / 涨停跌停 / 连板数 / 炸板均由全市场个股日K聚合，"
                 "成交额取自日K成交额（同花顺源为精确成交额，腾讯源为 量×价 换算）。"
@@ -3221,12 +3460,14 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
             concept = concept_emotion(boards, list(zt["stocks"]), hist_boards,
                                       date_str=date_str, roles_ctx=_rctx,
                                       roles_members=_rmem,
-                                      concept_codes=_ccodes)
+                                      concept_codes=_ccodes,
+                                      index_pct=index_pct)
         except Exception as e:  # noqa: BLE001
             concept = {"available": False, "note": "概念板块采集失败：%s" % e}
     elif ctx_boards:
         concept = concept_emotion(ctx_boards, None, hist_boards, date_str=date_str,
-                                  roles_ctx=None, roles_members=None)
+                                  roles_ctx=None, roles_members=None,
+                                  index_pct=index_pct)
     else:
         concept = {"available": False, "note": "概念板块需先执行「历史数据重建」后查看"}
 

@@ -836,8 +836,22 @@ def _run_rebuild(days: int) -> None:
         db = SessionLocal()
         try:
             saved = 0
+            _today_s = _dt.date.today().isoformat()
             for d, snap in (res.get("snapshots") or {}).items():
-                cache_put(db, d, snap, "rebuild")
+                # ⚠️ 历史日必须 force 覆盖，否则重建白跑。
+                #
+                # cache_put 按数据质量分级（live 3 > rebuild 2 > partial 1），低不得覆盖高。
+                # 那条规则本意是防「残缺的实时回溯挤掉重建数据」，但副作用是：
+                # 用户最后浏览过的那一两个实盘日留下的是 kind=live 快照，之后无论重建多少次
+                # 都**拒绝写入**，于是这些日期永远停在旧格式上。
+                # 实测 V1.009.6：09-11 / 09-14 是 live，重建后仍没有本版新增的
+                # `emerging` / `top_up[].launch` / `theme_persist_up_ratio` 等字段 ——
+                # 而这两天恰恰是用户最常看的日期，前端表现为「新功能不生效」且全程不报错。
+                #
+                # 分级里「历史重建优于该日残留的 live」是成立的：重建走全市场个股日K，
+                # 涨跌分布/概念板块/炸板/成交额都齐全；而 live 只是当时那一次抓取的结果。
+                # **只对今天保留保护** —— 今天的重建用的是盘中半截日K，不该挤掉实盘快照。
+                cache_put(db, d, snap, "rebuild", force=(str(d) < _today_s))
                 saved += 1
             if res.get("board_hist"):
                 hist_put(db, res["board_hist"])
