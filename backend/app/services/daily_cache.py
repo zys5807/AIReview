@@ -24,6 +24,7 @@ from ..models import (BoardMemberCache, DailyMarketCache, MarketCacheMeta,
                       StockHotRankCache, StockKlineCache)
 from . import daily_extra as _dxe
 from . import daily_market as dm
+from . import theme_taxonomy as _tax
 
 _MEMBER_TTL_DAYS = 7
 _HIST_KEY = "board_hist"
@@ -71,6 +72,13 @@ def cache_get(db: Session, date_str: str) -> dict | None:
         return None
     snap["cache_kind"] = r.kind
     snap["cache_updated_at"] = r.updated_at.strftime("%Y-%m-%d %H:%M:%S") if r.updated_at else ""
+    # 大类赛道字段（V1.009.5）：缓存里那 65 行历史快照重建时还没有 track，
+    # 在这里补齐 —— cache_get 是全站唯一的快照读口，新老数据一视同仁。
+    try:
+        _tax.attach_tracks(snap)
+    except Exception:  # noqa: BLE001
+        # 赛道只是展示增强项，绝不能让它的异常把复盘页带崩
+        traceback.print_exc()
     return snap
 
 

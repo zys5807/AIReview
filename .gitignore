@@ -39,3 +39,14 @@ test_*.py
 # 日志
 *.log
 backend/app.db.bak_*
+
+# 改口径时的就地备份（daily_market.py / 缓存 JSON 快照，体积大且一次性）
+backend/backup/
+
+# 开发期临时脚本与产物（下划线前缀，历史上从不入库）
+# 注意：不能写 `_*`，那会连 `__init__.py` 一起忽略掉
+_*.py
+_*.json
+_*.png
+_*.mjs
+backend/_*

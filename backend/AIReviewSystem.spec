@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('../frontend/dist', 'dist'), ('.env', '.')]
+# `app/data` 是**大类赛道映射表**（V1.009.5）：theme_taxonomy.json 由
+# backend/build_theme_taxonomy.py 离线生成。打包后 exe 没有 MCP 环境，
+# 拉不到申万/产业链骨架，所以必须把这份静态映射一起打进去 ——
+# 漏了它的表现是赛道列全部显示 `-`（theme_taxonomy 加载失败会降级为 None，不报错）。
+datas = [('../frontend/dist', 'dist'), ('.env', '.'), ('app/data', 'app/data')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('uvicorn')

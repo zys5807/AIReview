@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures as _cf
 import datetime as _dt
 import json
+import bisect
 import random
 import re as _re
 import time
@@ -27,6 +28,7 @@ import urllib.parse
 from decimal import Decimal as _DEC, ROUND_HALF_UP, ROUND_DOWN, ROUND_CEILING
 
 from . import market_data as md
+from . import theme_taxonomy as _tax
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -549,14 +551,42 @@ _BOARD_NOISE = {
     "近期新高", "百日新高", "历史新高", "近期新低", "百日新低", "昨日涨停",
     "昨日连板", "昨日触板", "涨停股", "跌停股", "低价股板块", "机构调研", "股东增持",
     "股东减持", "股份回购", "股权质押", "解禁", "送转预期", "摘帽概念", "ST股",
+    # V1.009.5 补：区域统计板块 + 估值/规模风格板块 + 破发破净类交易标签。
+    # 原有的地域规则只覆盖东财「XX板块」命名（广东板块 / 江苏板块），
+    # 「西部大开发」「长江三角」「深圳特区」这类同义命名会整片漏进去
+    # ——实测 63 个交易日里「西部大开发」进了 24 天主线，排在第 3 位。
+    "破发股", "破增发价股", "AB股", "西部大开发", "长江三角", "京津冀", "粤港澳",
+    "东北振兴", "海峡西岸", "珠三角", "环渤海", "皖江区域", "中原经济区",
+    "小盘成长", "中盘成长", "大盘成长", "小盘价值", "中盘价值", "大盘价值",
+    # V1.009.5 补（第二批）：大类赛道归纳时全量导出 410 个"有效概念"做人工审计，
+    # 发现下面这 23 个仍是统计/风格类伪板块。它们不属于任何真实题材，
+    # 却会被吸附到"零售/消费""金融"等大类里，污染赛道聚合口径。
+    "央视50", "HS300", "红利股", "红利破净股", "周期股", "微盘股", "微盘精选",
+    "宁组合", "创业成份", "证金持股", "密集调研", "超级品牌", "高成长股",
+    "行业龙头", "独角兽", "IPO受益", "贬值受益", "稀缺资源",
+    "股权分散", "股权激励", "股权转让", "股权集中",
 }
 _NOISE_PREFIX = ("昨日", "最近", "东方财富", "龙虎榜", "融资", "机构", "基金", "社保",
                  "北向", "外资", "险资", "养老金", "公募", "私募", "知名", "活跃")
 _NOISE_WORDS = ("高振幅", "高换手", "热股", "含一字", "打二板", "触板", "中字头",
-                "连板", "炸板", "封板")
+                "连板", "炸板", "封板",
+                # V1.009.5 补：下面这些原本漏网。_BOARD_NOISE 是**精确匹配**，
+                # 名单里写了「并购重组」而真名是「并购重组概念」→ 根本没拦住；
+                # 改用子串匹配才能覆盖「XX概念」这类后缀变体。
+                "并购重组", "重组", "参股", "市净率", "市盈率", "股息率",
+                "特区", "ST",
+                # V1.009.5 补（第二批）：纯度/规模/调研类标签，全部用子串覆盖变体。
+                # 「风格」覆盖面最广：先进制造风格 / 医药医疗风格 / 消费风格 /
+                # 科技风格 / 金融地产风格 —— 实测这 5 个全都在 504 个概念里。
+                "风格", "股权", "红利", "微盘", "成份", "调研")
 # 业绩/风格统计类板块名：2026中报预减 / 2026三季报首亏 / 2025年报预盈 …
 _NOISE_RE = _re.compile(
-    r"^\d{4}\s*(年)?\s*(中报|一季报|三季报|半年报|年报)"
+    # 指数类板块（中证500 / 上证180 / 沪深300 / 创业板指…）。_BOARD_NOISE 里那几个
+    # 写成了带下划线的「中证500_」，而东财真名是「中证500」—— 精确匹配根本拦不住，
+    # 实测 2026-06-15 的「中证500」直接进了主线。改用前缀正则覆盖所有指数变体。
+    r"^(上证|深证|沪深|中证|国证|北证|科创|创业板|中小板|A50|A100|MSCI|标普|富时)"
+    r"|^\d{4}\s*(年)?\s*(中报|一季报|三季报|半年报|年报)"
+    r"|^HS\d|^央视\d"                      # HS300_ / 央视50_：带下划线，精确匹配拦不住
     r"|(新高|新低|预减|预增|预盈|预亏|首亏|减亏|扭亏|摘帽|破净|重仓|举牌|增减持)$")
 
 
@@ -686,10 +716,17 @@ def _stock_boards(code: str, spt: int = 3) -> list[dict]:
     return out
 
 
-def _zt_concept_contrib(zt_stocks: list[dict], size_map: dict | None = None) -> tuple[list[dict], dict]:
+def _zt_concept_contrib(zt_stocks: list[dict], size_map: dict | None = None,
+                        concept_codes: set | None = None) -> tuple[list[dict], dict]:
     """涨停股 → 概念板块分布（识别当日主线题材）
 
     返回 (贡献榜, {板块代码: 涨停股列表})。贡献榜按涨停家数降序，家数相同按板块涨幅降序。
+
+    concept_codes: 概念全集白名单（可选）。**务必传** —— 个股板块接口用的 spt=3
+    实际返回「概念 + 行业 + 交易标签」的混合列表，其中的行业板块（电子 / 元件 /
+    印制电路板…）不在概念全集里，因此拿不到 size，会以 size=0、ratio=None 的形式
+    混进主线题材（实测 2026-09-11 的 12 个主线里占了 3 个）。重建路径的 boards 本
+    就来自概念全集，这里做同一道校正，两条路径的口径才一致。
     """
     stocks = [s for s in zt_stocks if not s.get("is_st")][:_CONCEPT_STOCK_LIMIT]
     if not stocks:
@@ -715,14 +752,22 @@ def _zt_concept_contrib(zt_stocks: list[dict], size_map: dict | None = None) -> 
                 continue
             d = agg.setdefault(c, {"code": c, "name": b.get("name") or c,
                                    "pct": b.get("pct"), "count": 0,
-                                   "lbc_max": 0, "codes": []})
+                                   "lbc_max": 0, "lbc2": 0, "amt": 0.0, "codes": []})
             d["count"] += 1
-            d["lbc_max"] = max(d["lbc_max"], int(s.get("lbc") or 1))
+            _lb = int(s.get("lbc") or 1)
+            d["lbc_max"] = max(d["lbc_max"], _lb)
+            if _lb >= 2:
+                d["lbc2"] += 1
+            _amt = s.get("amount")
+            if isinstance(_amt, (int, float)):
+                d["amt"] += float(_amt)
             d["codes"].append({"code": s["code"], "name": s["name"],
-                               "lbc": int(s.get("lbc") or 1)})
+                               "lbc": _lb})
             stock_map.setdefault(c, []).append(s)
 
-    # 过滤掉宽基/资金属性/地域统计等伪板块，避免淹没真正的细分题材主线
+    # 先按概念全集白名单校正，再过滤宽基/资金属性/地域统计等伪板块
+    if concept_codes:
+        agg = {c: v for c, v in agg.items() if c in concept_codes}
     contrib = [v for v in agg.values() if not _is_noise_board(v["name"])]
     sizes = size_map or {}
     for v in contrib:
@@ -795,10 +840,17 @@ def _stage_today(pct, zt: int, ratio=None) -> tuple[str, str]:
 
 
 def _merge_today_seq(hist: dict | None, code: str, date_str: str | None,
-                     pct, zt: int) -> list[dict]:
-    """把当日数据并入板块历史序列（同日覆盖 / 更早则插入），返回末尾 12 日"""
+                     pct, zt: int, extra: dict | None = None) -> list[dict]:
+    """把当日数据并入板块历史序列（同日覆盖 / 更早则插入），返回末尾 12 日
+
+    extra: 可选的当日附加字段（ratio / lbc_max / lbc2 / amt / size）。
+    V1.009.5 起主线四维打分要在**当日**也用这些字段，若并序列时丢掉，
+    当日就会退化成"只有 pct/zt"的残缺行，导致打分与历史日期口径分叉。
+    """
     seq = list((hist or {}).get(code) or [])
     today = {"date": date_str, "pct": pct, "zt": int(zt or 0)}
+    if extra:
+        today.update(extra)
     if not seq:
         return [today]
     last_d = seq[-1].get("date") or ""
@@ -1094,11 +1146,294 @@ def board_roles_daily(members_map: dict, ctx: dict, date: str,
     return out
 
 
+# ===================== 主线题材四维打分（V1.009.5） =====================
+# 旧口径只做了一次横截面排行（排序键 = 涨停家数 → 板块涨幅），两个硬伤：
+#   ① count 是板块内涨停的**绝对家数**，被成分股数量绑架 —— 20 只成分股里 5 家
+#      涨停（25%）永远排不过 200 只里 8 家（4%）；ratio 早就算出来了却没进排序。
+#   ② 完全不看时间维度 —— 昨日 0 家、今日 6 家的一日游会压过连续 4 天 4/5/4/5 家的
+#      真主线。而"在榜天数"所需的历史序列其实**已经存在本地库里**（hist），现算零成本。
+# 新口径把"主线"当成一个**带时间维度的状态**：资格线筛池 → 四维打分 → 分级。
+#   聚焦度 0.30  涨停占板块比（候选池内分位）——回答"现在强不强"
+#   持续性 0.30  近 5 日进涨停家数前 15 的天数（近端加权）——回答"一直强不强"
+#   空间高度 0.30 最高连板 + 二板及以上家数——回答"有没有空间"
+#   资金容量 0.10 涨停股成交额合计（分位）——回答"上不上得了仓位"
+
+_THEME_W = {"focus": 0.30, "persist": 0.30, "height": 0.30, "capacity": 0.10}
+_THEME_WIN = 5              # 持续性回看窗口（交易日）
+_THEME_TOP = 15             # 当日涨停家数进全市场概念前 N 名才算"在榜"
+_THEME_DECAY = [1.0, 0.8, 0.6, 0.4, 0.2]   # 近端加权，索引 0 = 最近一日
+_THEME_ADAPT_STD = 0.05     # 维度在候选池内标准差低于此值 → 无区分力，权重转移
+_THEME_QUAL_RATIO = 2.0     # 资格线：涨停占板块比 >= 2%
+_THEME_QUAL_PCT_Q = 0.95    # 资格线：板块涨幅 >= 全市场概念 95 分位
+_THEME_CORE = 0.66          # 核心主线分数阈值（唯一判据，无 TOP3 兜底，见 _theme_score）
+_THEME_SUB = 0.40           # 次级主线阈值
+_THEME_MAX1 = 12            # 输出上限
+
+
+def _rank_pct(pairs: list) -> dict:
+    """[(key, value)] → {key: 排名分位 0~1}（值越大分位越高，并列取平均位）
+
+    用分位而非 min-max：避免个别极端值把其余板块全压在一片，
+    且候选池大小变化时分数仍然可比。
+    """
+    vals = sorted([v for _, v in pairs if isinstance(v, (int, float))])
+    n = len(vals)
+    out: dict = {}
+    # 每个 key 都要有值（缺失/全空时给 0.0）—— 让调用方无需再写 .get(k, 0.0) 兜底，
+    # 否则"全维度缺失"这种边界会在下游以 KeyError 或静默 0 两种不同形式表现。
+    for k, v in pairs:
+        if not n or not isinstance(v, (int, float)):
+            out[k] = 0.0
+            continue
+        lo = bisect.bisect_left(vals, v)
+        hi = bisect.bisect_right(vals, v)
+        out[k] = round((lo + hi) / 2.0 / n, 4)
+    return out
+
+
+def _hist_dates(hist: dict | None, date_str: str | None, win: int) -> list[str]:
+    """从 hist 里取「不晚于 date_str」的最近 win 个交易日（升序，含 date_str）
+
+    ⚠️ 必须按 date_str 截**上界**。hist 是整段重建窗口的序列（如 06-16~09-14），
+    若直接取 sorted(全集)[-win:]，那么**除最后 5 天以外的所有日期**都会拿到窗口
+    末端那几天 —— 实测 6~8 月的每一个日期，持续性窗口都落到了 9 月、
+    main_switch.prev_date 恒为 09-11。后果是持续性维度与主线切换信号整体失效，
+    而且不报错、不崩溃，只是静默算错（最难发现的一类 bug）。
+    历史回看正是本功能的主用途，这个上界是正确性的前提。
+    """
+    hi = date_str or ""
+    ds = set()
+    for seq in (hist or {}).values():
+        for row in seq:
+            d = row.get("date")
+            if d and (not hi or d <= hi):
+                ds.add(d)
+    if date_str:
+        ds.add(date_str)
+    return sorted(ds)[-max(1, int(win)):]
+
+
+def _daily_rank_map(hist: dict | None, dates: list) -> dict:
+    """{date: {code: (当日涨停家数排名 1-based, 当日涨停家数)}} —— 持续性维度用
+
+    hist 存的是**全部概念板块**的每日序列（504 个），所以每日横截面排名可以现算，
+    零网络成本。同一日按 (涨停家数 ↓, 涨跌幅 ↓) 定序。
+
+    值里同时带 zt：**名次必须与 zt>0 联合成立**。只看名次会出问题 ——
+    冰点日全市场最高才 2 家涨停时，"前 15 名"里会混进一堆 0 涨停的板块，
+    白送持续性分。
+
+    伪板块（"昨日涨停" / "昨日连板" / 区域 / 估值风格…）必须从**排名集**里剔掉：
+    "昨日涨停"的成分股按定义就是昨日全部涨停股，其涨停家数每天都是全市场最高，
+    于是它常年霸占第 1 名，把 top-15 里 4 个名额（含 _含一字 的两个变体）固定占掉，
+    真正的题材被整体挤低一名 —— 持续性的排名基准就被污染了。
+    name 缺失时**不剔**（旧 hist 没这个字段，宁可少剔也不要把整表剔空）。
+    """
+    want = set(dates)
+    bucket: dict = {}
+    for code, seq in (hist or {}).items():
+        for row in seq:
+            d = row.get("date")
+            if d in want:
+                _nm = row.get("name")
+                if _nm and _is_noise_board(_nm):
+                    continue
+                _p = row.get("pct")
+                bucket.setdefault(d, []).append(
+                    (code, int(row.get("zt") or 0),
+                     _p if isinstance(_p, (int, float)) else -999.0))
+    out: dict = {}
+    for d, rows in bucket.items():
+        rows.sort(key=lambda x: (-x[1], -x[2]))
+        out[d] = {c: (i + 1, z) for i, (c, z, _) in enumerate(rows)}
+    return out
+
+
+def _persist_score(rank_map: dict, code: str, dates: list, top_k: int) -> tuple:
+    """近 win 日「有涨停 且 涨停家数进前 top_k」的天数，近端加权归一化 → (分数, 命中天数)
+
+    这是唯一能区分「一日游」与「真主线」的维度：
+    一日游板块今天 6 家涨停但前面几天都不在榜 → 分数极低；
+    连续 5 天在榜的板块 → 1.0。
+
+    两个条件缺一不可：光有 zt>0 会让"每天 1 家涨停"的平庸板块混满分；
+    光有名次会在冰点日把 0 涨停的板块也算成在榜。
+
+    分值 = 近端加权命中率 × 覆盖度（命中天数 / 窗口）：
+    单用加权命中率会给一日游虚高的分 —— 近端权重 1.0 占到总权重 1/3，
+    于是"只在今天在榜"能拿 0.33，与真主线的 1.0 只差 3 倍，区分度不足。
+    乘上覆盖度后：连续 5 天 = 1.0，一日游 = 0.33 × 1/5 = 0.067（差 15 倍），
+    断了 1 天的 4/5 主线 ≈ 0.93 × 0.8 = 0.75 —— 频率与覆盖都照顾到了。
+    """
+    if not dates:
+        return 0.0, 0
+    win = min(len(dates), len(_THEME_DECAY))
+    use = dates[-win:]
+    tot = sum(_THEME_DECAY[:win]) or 1.0
+    got = 0.0
+    hits = 0
+    for i, d in enumerate(reversed(use)):     # i=0 → 最近一日
+        cell = (rank_map.get(d) or {}).get(code)
+        if cell and cell[0] <= top_k and cell[1] > 0:
+            got += _THEME_DECAY[i]
+            hits += 1
+    cover = (hits / float(win)) if win else 0.0
+    return round(got / tot * cover, 4), hits
+
+
+def _height_score(lbc_max, lbc2) -> float:
+    """空间高度 = 最高连板(0.7) + 二板及以上家数(0.3)，各自封顶
+
+    有龙头的题材才是主线，没高度的是扩散/补涨。
+    """
+    a = min(int(lbc_max or 0), 6) / 6.0
+    b = min(int(lbc2 or 0), 4) / 4.0
+    return round(a * 0.7 + b * 0.3, 4)
+
+
+def _theme_qualified(c: dict, pct_q) -> bool:
+    """资格线：满足任一即进入候选池
+
+    ① 涨停家数 >= 2
+    ② 涨停占板块比 >= 2%
+    ③ 板块涨幅 >= 全市场概念 95 分位 且 至少有 1 家涨停
+
+    池子因此自然伸缩：冰点日可能只有 3 个候选（这本身就是信号），高潮日可能 30 个。
+    200 只成分股的板块要 4 家涨停才够 2%，20 只的只要 1 家 —— 资格线本身
+    就完成了对成分股数量的校正。
+    """
+    zt = int(c.get("count") or 0)
+    if zt >= 2:
+        return True
+    ratio = c.get("ratio")
+    if isinstance(ratio, (int, float)) and ratio >= _THEME_QUAL_RATIO:
+        return True
+    pct = c.get("pct")
+    if zt >= 1 and pct_q is not None and isinstance(pct, (int, float)) and pct >= pct_q:
+        return True
+    return False
+
+
+def _std(vals: list) -> float:
+    if len(vals) < 2:
+        return 0.0
+    m = sum(vals) / len(vals)
+    return (sum((x - m) ** 2 for x in vals) / len(vals)) ** 0.5
+
+
+def _theme_score(cands: list, hist: dict | None, dates: list) -> tuple:
+    """候选池 → 四维打分 + 分级 → (打分排序后的列表, 实际权重)
+
+    自适应权重：某维在候选池内的标准差 < _THEME_ADAPT_STD 时（如今天所有候选都
+    只有 1 只涨停，聚焦度全一样），该维没有区分力，权重按比例转移给其余维度，
+    避免"无信息的维度"稀释分数。全部维度都无区分力时保持原权重不变。
+    """
+    if not cands:
+        return [], {}
+    rank_map = _daily_rank_map(hist, dates)
+
+    raw = {"focus": [], "persist": [], "height": [], "capacity": []}
+    meta: dict = {}
+    for c in cands:
+        code = c["code"]
+        _r = c.get("ratio")
+        focus_v = float(_r) if isinstance(_r, (int, float)) else 0.0
+        p_score, p_hits = _persist_score(rank_map, code, dates, _THEME_TOP)
+        h_v = _height_score(c.get("lbc_max"), c.get("lbc2"))
+        _a = c.get("amt")
+        cap_v = float(_a) if isinstance(_a, (int, float)) else 0.0
+        raw["focus"].append((code, focus_v))
+        raw["persist"].append((code, p_score))
+        raw["height"].append((code, h_v))
+        raw["capacity"].append((code, cap_v))
+        meta[code] = {"persist_days": p_hits, "focus": round(focus_v, 2),
+                      "height": round(h_v, 4), "capacity": round(cap_v, 0)}
+
+    # 聚焦度与容量取候选池内分位；持续性与高度本身已是 0~1 的绝对分
+    dim = {
+        "focus": _rank_pct(raw["focus"]),
+        "persist": dict(raw["persist"]),
+        "height": dict(raw["height"]),
+        "capacity": _rank_pct(raw["capacity"]),
+    }
+    vals = {k: [dim[k].get(c["code"], 0.0) for c in cands] for k in dim}
+    w = dict(_THEME_W)
+    dead = {k for k, v in vals.items() if _std(v) < _THEME_ADAPT_STD}
+    if dead and len(dead) < len(w):
+        lost = sum(w[k] for k in dead)
+        alive = [k for k in w if k not in dead]
+        base = sum(w[k] for k in alive)
+        for k in dead:
+            w[k] = 0.0
+        if base > 0:
+            # 保 6 位：4 位会让"权重和 = 1"出现 1e-4 级误差，前端求和显示不干净
+            for k in alive:
+                w[k] = round(w[k] + lost * w[k] / base, 6)
+            # 再把舍入残差补给权重最大的存活维度，使 sum 精确回到 1
+            _d = round(1.0 - sum(w.values()), 6)
+            if _d:
+                _top = max(alive, key=lambda k: w[k])
+                w[_top] = round(w[_top] + _d, 6)
+
+    scored = []
+    for c in cands:
+        code = c["code"]
+        d = {k: round(dim[k].get(code, 0.0), 4) for k in dim}
+        score = sum(d[k] * w[k] for k in d)
+        r = dict(c)
+        r.update({
+            "score": round(score, 4),
+            "dims": d,
+            "weights": w,
+            "persist_days": meta[code]["persist_days"],
+            "focus_raw": meta[code]["focus"],
+            "height_raw": meta[code]["height"],
+            "capacity_raw": meta[code]["capacity"],
+        })
+        scored.append(r)
+
+    # 排序：总分 → 持续性 → 涨停家数（同分时"一直是主线"的优先）
+    scored.sort(key=lambda x: (-x["score"], -x["persist_days"], -int(x.get("count") or 0)))
+    # 档位**只用绝对阈值**，不做「前 3 名自动升核心」。
+    #
+    # 为什么去掉 TOP3 兜底（实测结论）：原来的 `score >= _THEME_CORE or (i < 3 and
+    # score >= _THEME_SUB)` 里，前 3 名几乎必然 >= 0.40，于是 n_core 恒 >= 3，
+    # market_state 退化成一句常量 —— 63 个交易日里 62 天都是"主线明确"，
+    # 而它本该回答的核心问题是"今天到底有没有主线"。去掉兜底后分布才是可用的
+    # 信号：达 0.66 说明该题材在近 5 日里有 4~5 天进过涨停家数前 15 且今日仍强，
+    # 达不到就是真的没有能扛旗的题材 —— 空仓是合法输出。
+    # 展示不受影响：main_lines 仍按总分取前 _THEME_MAX1 名。
+    for r in scored:
+        if r["score"] >= _THEME_CORE:
+            r["tier"] = "core"
+        elif r["score"] >= _THEME_SUB:
+            r["tier"] = "secondary"
+        else:
+            r["tier"] = "edge"
+    return scored, w
+
+
+def _market_state(n_core: int) -> tuple:
+    """核心主线家数 → (市场状态, 说明)
+
+    「今天到底有没有主线」本身就是最有价值的信号之一：
+    0 个说明空仓是合法输出；>=6 个在情绪周期里往往是普涨末期，反而该警惕。
+    """
+    if n_core <= 0:
+        return "无主线", "当日无板块达到核心主线标准 —— 空仓是合法输出"
+    if n_core <= 2:
+        return "结构性行情", "核心主线 %d 个，集中火力" % n_core
+    if n_core <= 5:
+        return "主线明确", "核心主线 %d 个，正常参与" % n_core
+    return "全面开花", "核心主线 %d 个 —— 情绪周期里常是普涨末期，反而该警惕" % n_core
+
+
 def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                     hist: dict | None = None, top_n: int = 15,
                     date_str: str | None = None,
                     roles_ctx: dict | None = None,
-                    roles_members: dict | None = None) -> dict:
+                    roles_members: dict | None = None,
+                    concept_codes: set | None = None) -> dict:
     """概念板块每日情绪周期分析（V1.009.1 核心）
 
     boards: 概念板块全量（当日实时 / 历史重建结果均可）
@@ -1109,6 +1444,7 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
       roles_ctx     = {"pct","lim","extra"}，历史走 roles_ctx_build、实时走 roles_ctx_live
       roles_members = {板块代码: {"name","members":[{code,name,mktcap}]}}
     只对进入「主线题材」的板块计算（控制快照体积）；缺任一者则该字段为空。
+    concept_codes: 概念全集（实时路径必须传，见 _zt_concept_contrib）
     """
     if not boards:
         return {"available": False, "total": 0,
@@ -1144,12 +1480,19 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
 
     # 涨停贡献榜：实时走"涨停股 → 所属概念"映射；历史重建直接用板块行自带的涨停家数
     if zt_stocks:
-        contrib, _sm = _zt_concept_contrib(zt_stocks, size_map)
+        contrib, _sm = _zt_concept_contrib(zt_stocks, size_map, concept_codes)
         src = "live"
     else:
         contrib = [
             {"code": b["code"], "name": b["name"], "pct": b.get("pct"),
-             "count": int(b.get("zt") or 0), "lbc_max": 0, "codes": [],
+             "count": int(b.get("zt") or 0),
+             # V1.009.5 修 bug：此处原为硬编码 "lbc_max": 0，导致历史日期
+             # 前端的红色「N板」标签永不显示（实时正常、重建恒 0）。
+             # 现在 rebuild_board_daily 已输出 lbc_max / lbc2 / amt。
+             "lbc_max": int(b.get("lbc_max") or 0),
+             "lbc2": int(b.get("lbc2") or 0),
+             "amt": b.get("amt") or 0,
+             "codes": [],
              "size": size_map.get(b["code"]) or 0,
              "ratio": (round(int(b.get("zt") or 0) / size_map[b["code"]] * 100, 1)
                        if size_map.get(b["code"]) else None)}
@@ -1160,23 +1503,55 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                                     -(x["pct"] if isinstance(x["pct"], (int, float)) else -99)))
         src = "rebuild"
 
-    # 主线题材 = 涨停贡献榜 TOP + 涨幅榜前列（去重，涨停贡献优先）
-    main: list[dict] = []
-    seen: set[str] = set()
-    for c in contrib[:10]:
-        if c["code"] not in seen:
-            seen.add(c["code"])
-            main.append(c)
-    for b in top_up[:8]:
-        if b["code"] not in seen:
-            seen.add(b["code"])
-            main.append({"code": b["code"], "name": b["name"], "pct": b["pct"],
-                         "count": 0, "lbc_max": 0, "codes": []})
+    # ---- 主线题材：资格线筛池 → 四维打分 → 分级（V1.009.5 取代旧的"取前 N 名"）----
+    # 涨幅 >= 全市场概念的 95 分位（资格线条件③用）
+    _pct_all = sorted([b["pct"] for b in boards if isinstance(b.get("pct"), (int, float))])
+    pct_q = (_pct_all[min(len(_pct_all) - 1, int(len(_pct_all) * _THEME_QUAL_PCT_Q))]
+             if _pct_all else None)
+
+    # 候选池 = 涨停贡献榜（含实时映射 / 重建板块行）+ 涨幅榜里未出现的板块
+    cand_all: list[dict] = []
+    seen_c: set[str] = set()
+    for c in contrib:
+        if c["code"] not in seen_c:
+            seen_c.add(c["code"])
+            cand_all.append(c)
+    for b in top_up:
+        if b["code"] in seen_c:
+            continue
+        seen_c.add(b["code"])
+        cand_all.append({
+            "code": b["code"], "name": b["name"], "pct": b["pct"],
+            "count": int(b.get("zt") or 0),
+            "lbc_max": int(b.get("lbc_max") or 0),
+            "lbc2": int(b.get("lbc2") or 0),
+            "amt": b.get("amt") or 0,
+            "size": size_map.get(b["code"]) or 0, "ratio": None, "codes": [],
+        })
+
+    cand = [c for c in cand_all
+            if _theme_qualified(c, pct_q) and not _is_noise_board(c.get("name"))]
+    # 兜底：极端冰点日可能一个都过不了资格线（这本身是信号），但仍退回涨幅榜前列
+    # 保证模块不空白；此时 tier 全为 edge，前端会显示"无主线"。
+    if not cand:
+        cand = [c for c in cand_all if not _is_noise_board(c.get("name"))][:3]
+
+    dates_use = _hist_dates(hist, date_str, _THEME_WIN)
+    scored, theme_w = _theme_score(cand, hist, dates_use)
+    main: list[dict] = scored[:_THEME_MAX1]
 
     main_lines = []
-    for m in main[:12]:
+    for m in main:
         zt_cnt = int(m.get("count") or 0)
-        seq_use = _merge_today_seq(hist, m["code"], date_str, m.get("pct"), zt_cnt)
+        # 当日也要带上四维用的字段并进序列 —— 否则当日退化成"只有 pct/zt"的残缺行，
+        # 明天回看今天时算不出持续性/高度/容量，打分口径就会分叉。
+        seq_use = _merge_today_seq(
+            hist, m["code"], date_str, m.get("pct"), zt_cnt,
+            {"name": m.get("name"),
+             "ratio": m.get("ratio"), "size": m.get("size"),
+             "lbc_max": int(m.get("lbc_max") or 0),
+             "lbc2": int(m.get("lbc2") or 0),
+             "amt": m.get("amt") or 0})
         if len(seq_use) >= 3:   # 有历史序列 → 真实周期阶段；否则退化为"当日强度"口径
             stage, reason = _stage_of(m.get("pct"), zt_cnt, seq_use)
         else:
@@ -1193,12 +1568,30 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                     _roles = {"leader": [], "main_force": [], "follower": [], "catchup": [],
                               "pool": 0,
                               "note": "角色判定异常：%s: %s" % (type(_re).__name__, _re)}
+        # 大类赛道（V1.009.5）：把「芯片概念 / 半导体概念 / 光刻胶 / 存储芯片」这类同赛道
+        # 细分收敛到一个标签，避免一眼看去像 4 条互不相干的独立主线。
+        # 横切属性（央国企改革等）同样会返回，前端靠 track_cross 区分展示样式。
+        # 读缓存的历史快照由 theme_taxonomy.attach_tracks() 在 cache_get 里补齐。
+        _track = _tax.track_of(m["code"], m.get("name"))
         main_lines.append({
             "code": m["code"],
             "name": m["name"],
+            "track": _track,
+            "track_cross": bool(_track) and not _tax.is_track(_track),
             "pct": m.get("pct"),
             "zt_count": zt_cnt,
             "max_lbc": int(m.get("lbc_max") or 0),
+            "lbc2": int(m.get("lbc2") or 0),
+            "amt": m.get("amt") or 0,
+            # ---- 四维打分结果（V1.009.5）----
+            "score": m.get("score"),
+            "tier": m.get("tier"),
+            "dims": m.get("dims"),
+            "weights": m.get("weights"),
+            "focus_raw": m.get("focus_raw"),
+            "height_raw": m.get("height_raw"),
+            "capacity_raw": m.get("capacity_raw"),
+            "persist_days": m.get("persist_days"),
             "ratio": m.get("ratio"),
             "size": m.get("size"),
             "up": bd.get("up"),
@@ -1217,9 +1610,58 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
     for line in main_lines:
         stage_count[line["stage"]] = stage_count.get(line["stage"], 0) + 1
 
+    # ---- 今日主线数 / 市场状态 / 主线切换（V1.009.5 新增信号）----
+    core_codes = {x["code"] for x in main_lines if x.get("tier") == "core"}
+    n_core = len(core_codes)
+    mstate, mstate_note = _market_state(n_core)
+
+    def _nm_of(c):
+        return (bmap.get(c) or {}).get("name") or c
+
+    # 昨日"在榜"集合：上一交易日涨停家数进全市场概念前 _THEME_TOP 名的板块（且 >=2 家）
+    prev_codes: set = set()
+    _prev_z: dict = {}
+    prev_date = dates_use[-2] if len(dates_use) >= 2 else None
+    if prev_date:
+        _rk = (_daily_rank_map(hist, [prev_date]) or {}).get(prev_date) or {}
+        prev_codes = {c for c, cell in _rk.items()
+                      if cell[0] <= _THEME_TOP and cell[1] >= 2}
+        _prev_z = {c: cell[1] for c, cell in _rk.items()}
+    # 今日"在榜"集合（drop 的对照基准，见下）
+    _rk_today = ((_daily_rank_map(hist, dates_use[-1:]) or {}).get(dates_use[-1]) or {}
+                 if dates_use else {})
+    today_on = {c for c, cell in _rk_today.items()
+                if cell[0] <= _THEME_TOP and cell[1] >= 2}
+
+    # 进出两个名单**必须用同一把尺子**，否则名单长度会悬殊到没法看。
+    # 原来 new 取"今日核心「减去」昨日在榜"（严进），drop 取"昨日在榜「减去」今日核心"
+    # （宽出）—— 两边基准不同，于是 new 常常是 0 条，drop 却是十几条（实测 09-11 为
+    # 14 条），把"掉出"变成了"昨日热门里今天没当上核心的几乎所有板块"，等于没说。
+    # 现在把 drop 收紧到「昨日在榜 且 今日掉出在榜」，与 new 形成严进严出的一对：
+    #   new  = 今日核心主线中，昨日还不在榜的（抬头信号，最该看）
+    #   drop = 昨日在榜的题材中，今日已掉出在榜的（退潮信号）
+    # 按昨日涨停家数降序并限 8 条 —— 前端是一排标签，十几条会糊成一片。
+    drop_codes = sorted(prev_codes - today_on, key=lambda c: -_prev_z.get(c, 0))[:8]
+    main_switch = {
+        "prev_date": prev_date,
+        "keep": [{"code": c, "name": _nm_of(c)} for c in sorted(core_codes & prev_codes)],
+        "new": [{"code": c, "name": _nm_of(c)} for c in sorted(core_codes - prev_codes)],
+        "drop": [{"code": c, "name": _nm_of(c)} for c in drop_codes],
+    }
+
     return {
         "available": True,
         "source": src,
+        # ---- V1.009.5：主线打分口径元信息 ----
+        "theme_weights": theme_w,
+        "theme_candidates": len(cand),
+        "theme_qualified_total": len(scored),
+        "pct_q95": (round(pct_q, 2) if isinstance(pct_q, (int, float)) else None),
+        "theme_win": len(dates_use),
+        "mains_count": n_core,
+        "market_state": mstate,
+        "market_state_note": mstate_note,
+        "main_switch": main_switch,
         "temperature": temp,
         "total": len(boards),
         "up": up,
@@ -1931,6 +2373,10 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
     ctx = roles_ctx_build(klines, name_map)
     code_pct: dict[str, dict[str, float]] = ctx["pct"]
     code_limit: dict[str, dict[str, int]] = ctx["lim"]
+    # extra: {code: {date: [成交额(元), 连板数|None, 近N日累计涨幅|None]}}
+    #   板块维度的"空间高度"（涨停股最高连板）与"资金容量"（涨停股成交额合计）
+    #   都取自这里，不再另跑一遍全市场日K。
+    code_extra: dict = ctx["extra"]
     if ctx_out is not None:
         ctx_out["ctx"] = ctx
         ctx_out["names"] = name_map
@@ -1957,6 +2403,9 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
             zt = 0
             up = 0
             down = 0
+            lbc_max = 0          # 当日涨停股里的最高连板（空间高度）
+            lbc2 = 0             # 当日二板及以上家数（梯队厚度）
+            amt = 0.0            # 当日涨停股成交额合计（资金容量）
             lead_n, lead_p = "", None
             for (c, nm, p) in cps:
                 pv = p.get(d)
@@ -1965,6 +2414,16 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 vals.append(pv)
                 if (code_limit.get(c) or {}).get(d) == 1:
                     zt += 1
+                    _e = (code_extra.get(c) or {}).get(d) or []
+                    _amt = _e[0] if len(_e) > 0 else None
+                    _lbc = _e[1] if len(_e) > 1 else None
+                    if isinstance(_amt, (int, float)):
+                        amt += float(_amt)
+                    _lb = int(_lbc or 1)
+                    if _lb > lbc_max:
+                        lbc_max = _lb
+                    if _lb >= 2:
+                        lbc2 += 1
                 if pv > 0:
                     up += 1
                 elif pv < 0:
@@ -1985,6 +2444,10 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 "count": len(vals),
                 "lead_name": lead_n,
                 "lead_pct": round(lead_p, 2) if lead_p is not None else None,
+                # V1.009.5：板块维度的空间高度与资金容量
+                "lbc_max": lbc_max,
+                "lbc2": lbc2,
+                "amt": round(amt, 0) if amt else 0,
             })
         if on_progress and (done % 50 == 0 or done == total):
             on_progress(done, total)
@@ -1995,15 +2458,37 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
 
 def board_history_from_daily(board_daily: dict, dates: list[str],
                              codes: list[str]) -> dict:
-    """从每日板块聚合结果提取指定板块的近 N 日序列 → {code: [{date,pct,zt}, ...]}"""
+    """从每日板块聚合结果提取指定板块的近 N 日序列
+
+    → {code: [{date,pct,zt,size,ratio,lbc_max,lbc2,amt}, ...]}
+
+    V1.009.5 起带上聚焦度 / 空间高度 / 资金容量：主线题材的四维打分在**历史日期**
+    必须与实时同口径，否则回看过去的主线排名会发生跳变（涨跌停口径刚统一过，
+    这里不该再留一个跨口径不一致）。
+
+    ratio 用**当日有效成分股数**（count，停牌股会改变当日基数）算，不用静态板块规模。
+    """
     out: dict[str, list] = {c: [] for c in codes}
     cset = set(codes)
     for d in dates:
         bucket = {b["code"]: b for b in (board_daily.get(d) or [])}
         for c in cset:
-            b = bucket.get(c)
-            out[c].append({"date": d, "pct": (b or {}).get("pct"),
-                           "zt": (b or {}).get("zt") or 0})
+            b = bucket.get(c) or {}
+            _zt = int(b.get("zt") or 0)
+            _sz = int(b.get("count") or 0)
+            out[c].append({
+                "date": d,
+                # name 只为「排名时剔除伪板块」服务（hist 只有 code，没有名字，
+                # 而 _is_noise_board 是按名字判定的）。
+                "name": b.get("name"),
+                "pct": b.get("pct"),
+                "zt": _zt,
+                "size": _sz,
+                "ratio": (round(_zt / _sz * 100, 1) if _sz else None),
+                "lbc_max": int(b.get("lbc_max") or 0),
+                "lbc2": int(b.get("lbc2") or 0),
+                "amt": b.get("amt") or 0,
+            })
     return out
 
 
@@ -2721,6 +3206,8 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
     if is_latest:
         try:
             boards = board_list(_FS_CONCEPT)
+            # 概念全集（用于剔除个股板块接口带回来的行业/交易标签板块）
+            _ccodes = {b["code"] for b in boards} or None
             # 角色分层（龙头/中军/跟风/补涨）：实时指标走全市场快照 + 涨停池 + 日K缓存
             _rctx, _rmem = None, None
             if member_loader and rows:
@@ -2733,7 +3220,8 @@ def collect_daily(date_str: str, hist_boards: dict | None = None,
                     _rctx, _rmem = None, None
             concept = concept_emotion(boards, list(zt["stocks"]), hist_boards,
                                       date_str=date_str, roles_ctx=_rctx,
-                                      roles_members=_rmem)
+                                      roles_members=_rmem,
+                                      concept_codes=_ccodes)
         except Exception as e:  # noqa: BLE001
             concept = {"available": False, "note": "概念板块采集失败：%s" % e}
     elif ctx_boards:

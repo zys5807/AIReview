@@ -336,13 +336,90 @@ const TIP = {
     s: '涨停股归属概念 / 板块行',
   },
   concept_ratio: {
-    t: '占板块比',
+    t: '聚焦度（占板块比）',
     d: '板块涨停家数 ÷ 板块成分股数 × 100%。',
     f: [
       '衡量资金聚焦度：占比高说明是板块整体性上涨，占比低说明只有个别龙头在涨',
-      '成分股数取该板块有行情的成分股数量',
+      '成分股数取该板块有行情的成分股数量（当日有效成分股，停牌股不计入）',
+      'V1.009.5 起这一项直接进入主线排序：旧口径按涨停「绝对家数」排，20 只成分股里 5 家涨停（25%）永远排不过 200 只里 8 家（4%）',
     ],
     s: '东财板块成分股',
+  },
+  theme_track: {
+    t: '大类赛道（板块归属）',
+    d: '把东财 504 个概念板块归纳成 25 个纵向赛道 + 3 类横切属性，用来回答「今天是哪个大方向在动」。',
+    f: [
+      '为什么需要：「芯片概念 / 半导体概念 / 光刻胶 / 存储芯片」是同一个方向的四个切面，只看概念名会误以为有 4 条互不相干的主线',
+      '点表头「赛道」可按赛道排序，同赛道自然聚到一起。不做真折叠：按赛道合并需要对该赛道涨停股去重（一只票可同时属于多个概念），而每行只下发了前 12 只涨停股，前端相加会重复计数',
+      '横切属性（国企改革 / 政策主题 / 属性标签）用灰色虚线标签区分 —— 它们不是赛道。「央国企改革」的并集达 2272 只、占半个市场，65 个交易日里 64 天在榜，若当成赛道会把其余赛道全部淹没',
+      '映射表离线生成后随程序打包（theme_taxonomy.json），运行时不联网；东财新增板块时由内嵌关键词规则兜底，不必等新版',
+      '归属依据：板块名关键词规则优先（覆盖 95%），规则未命中的少数派按成分股重合度吸附（12 个），个别语义歧义由人工名表纠正',
+      '归属只看「这个板块主要讲什么故事」，与该板块当日涨跌无关；找不到合适归属的显示 - ，不硬套',
+    ],
+    s: '东财概念板块成分股 + 离线生成的赛道映射表',
+  },
+  theme_tier: {
+    t: '档位（核心 / 次级 / 边缘）',
+    d: '由四维总分划分：总分 ≥ 0.66 为「核心主线」；0.40 ~ 0.66 为「次级主线」；低于 0.40 为「边缘题材」。只看绝对分，不做「前 3 名自动升核心」。',
+    f: [
+      '核心主线：三维以上共振，可动手',
+      '次级主线：两维达标，需等确认',
+      '边缘题材：仅一维达标，只观察',
+      '为什么不做「前 3 名自动升核心」：前 3 名的总分几乎必然 ≥ 0.40，那条规则会让核心家数恒 ≥ 3，于是上方「主线格局」退化成一句常量（实测 63 个交易日里 62 天都显示「主线明确」），而它本该回答的正是「今天到底有没有主线」',
+      '去掉兜底后分布才可用：达 0.66 说明该题材近 5 日里有 4~5 天进过涨停家数前 15 名且今日仍然强；达不到就是真的没有能扛旗的题材 —— 空仓是合法输出',
+      '表格上方的「主线格局」标签给出核心主线家数与市场状态',
+      '板块列表不受影响：仍按总分取前 12 名展示',
+    ],
+    s: '四维加权总分',
+  },
+  theme_score: {
+    t: '总分（主线四维打分）',
+    d: '聚焦度 0.30 + 持续性 0.30 + 空间高度 0.30 + 资金容量 0.10。候选池内各自归一化后加权求和，取值 0~1。悬停可看四维分项明细。',
+    f: [
+      '聚焦度 = 涨停占板块比，在候选池内取排名分位 —— 回答「现在强不强」',
+      '持续性 = 近 5 日「有涨停且涨停家数进全市场概念前 15 名」的天数，按 [1.0, 0.8, 0.6, 0.4, 0.2] 近端加权后再乘覆盖度（命中天数 ÷ 5）—— 回答「一直强不强」，是区分一日游与真主线的关键',
+      '空间高度 = min(最高连板, 6) ÷ 6 × 0.7 + min(二板及以上家数, 4) ÷ 4 × 0.3 —— 回答「有没有空间」，有龙头的题材才是主线，没高度的是扩散',
+      '资金容量 = 涨停股成交额合计，在候选池内取排名分位 —— 回答「上不上得了仓位」',
+      '聚焦度与容量用「分位」而非 min-max：避免个别极端值把其余板块压在一片，且候选池大小变化时分数仍可比',
+      '自适应权重：若某维在当日候选池内标准差 < 0.05（如今天所有候选都只有 1 只涨停，聚焦度全一样），该维没有区分力，其权重按比例转移给其余维度，避免无信息的维度稀释分数',
+      'V1.009.5 之前主线是「涨停贡献榜前 10 + 涨幅榜前 8」硬取，池子大小与行情温度无关；现在改为资格线筛池，池子会自然伸缩',
+    ],
+    s: '板块涨停/成分/涨幅（东财实时或历史重建）+ 板块近 5 日序列（本地库 hist）',
+  },
+  theme_persist: {
+    t: '持续性（在榜天数）',
+    d: '近 5 个交易日里，该板块「当日有涨停 且 涨停家数进入全市场概念板块前 15 名」的天数。',
+    f: [
+      '两个条件缺一不可：光有涨停会让「每天 1 家涨停」的平庸板块拿满分；光有名次会在冰点日把 0 涨停的板块也算成在榜',
+      '这是唯一能区分「一日游」与「真主线」的维度：一日游今天 6 家涨停但前几天都不在榜 → 持续性 0.067；连续 5 天在榜 → 1.0',
+      '每日横截面排名由本地库中全部约 504 个概念板块现算，零网络成本',
+      'V1.009.5：排名前先剔除伪板块。「昨日涨停」的成分股按定义就是昨日全部涨停股，其涨停家数每天都是全市场最高，会常年霸占第 1 名并固定占掉 top-15 里 4 个名额（含两个「_含一字」变体），把真题材整体挤低一名 —— 持续性的排名基准会被污染',
+      '同样剔除区域统计（西部大开发 / 长江三角）与估值风格（高市净率 / 小盘成长）这类板块，它们此前会以「主线」身份出现在表格里',
+      '窗口天数会随可用历史变化：刚开始回看的日子不足 5 日时只按已有的算（表头/字段里能看到窗口长度）',
+    ],
+    s: '本地板块历史序列（全部概念板块 × 近 N 日涨停家数）',
+  },
+  theme_qual: {
+    t: '候选池资格线',
+    d: '满足任一即进入主线候选池：① 涨停家数 ≥ 2；② 涨停占板块比 ≥ 2%；③ 板块涨幅 ≥ 全市场概念的 95 分位且至少 1 家涨停。',
+    f: [
+      '资格线本身完成了对成分股数量的校正：200 只成分股的板块要 4 家涨停才够 2%，20 只的只要 1 家',
+      '池子随行情温度自然伸缩：冰点日可能只有 3 个候选（这本身就是信号），高潮日可能 30 个',
+      '极端冰点日若一个都过不了资格线，会退回涨幅榜前 3 保证模块不空白，此时全为「边缘题材」且上方显示「无主线」',
+      '候选池同样已剔除伪板块（宽基 / 资金属性 / 交易标签 / 风格统计 / 区域统计）与行业板块 —— 个股板块接口会把行业板块一并带回来，而它们拿不到成分股数，会以「聚焦度为空」的形式混进主线',
+    ],
+    s: '当日板块数据 + 全市场概念涨幅分布',
+  },
+  theme_switch: {
+    t: '主线切换（新进 / 掉出）',
+    d: '两个方向各自的对照基准：「新进核心」= 今日核心主线中昨日还不在榜的；「掉榜」= 昨日在榜板块（涨停家数进前 15 名且 ≥ 2 家）中今日已掉出在榜的。',
+    f: [
+      '对右侧交易者来说，主线切换是最该被提醒的时刻：新进名单抬头往往意味着资金在换方向',
+      '「延续」不出列表，因为它是常态；只有变化才需要提示',
+      'V1.009.5：两个名单此前用的是两把不同的尺子 —— 新进取「今日核心 减 昨日在榜」（严进），掉出取「昨日在榜 减 今日核心」（宽出），于是新进常是 0 条而掉出有十几条（实测 09-11 为 14 条），等于没说。现在掉榜收紧到「昨日在榜 且 今日掉出在榜」，与「新进核心」形成严进严出的一对',
+      '掉榜按昨日涨停家数降序、最多 8 条；若尚未做历史数据重建、没有上一交易日数据，两个名单都为空',
+    ],
+    s: '今日核心档 + 昨日全市场概念涨停家数排名',
   },
   concept_stage: {
     t: '周期阶段',
@@ -899,6 +976,68 @@ function MiniTrendGrid({ data, loading, mainLines, days = 10 }) {
 }
 
 /** 概念板块情绪周期（V1.009.1）：板块全景 + 主线题材周期阶段 + 涨停贡献榜 + 涨跌幅榜 */
+const TIER_TXT = { core: '核心主线', secondary: '次级主线', edge: '边缘题材' }
+const TIER_COLOR = { core: 'red', secondary: 'orange', edge: 'default' }
+
+/** 主线档位标签 */
+function tierTag(t) {
+  if (!t) return '-'
+  return (
+    <Tag color={TIER_COLOR[t] || 'default'} style={{ marginInlineEnd: 0 }}>
+      {TIER_TXT[t] || t}
+    </Tag>
+  )
+}
+
+/** 市场状态标签配色：无主线 → 灰（空仓是合法输出）；全面开花 → 火山色（普涨末期反而要警惕） */
+function stateColor(s) {
+  if (s === '无主线') return 'default'
+  if (s === '结构性行情') return 'blue'
+  if (s === '主线明确') return 'red'
+  if (s === '全面开花') return 'volcano'
+  return 'default'
+}
+
+/** 四维打分明细（悬停总分时显示）：分项得分 × 各自权重 = 总分 */
+function dimsDetail(r) {
+  const d = r?.dims || {}
+  const w = r?.weights || { focus: 0.3, persist: 0.3, height: 0.3, capacity: 0.1 }
+  const f1 = (v) => (v == null ? '-' : Number(v).toFixed(3))
+  const rows = [
+    ['聚焦度', d.focus, w.focus, r.focus_raw == null ? '' : `${r.focus_raw}%`],
+    ['持续性', d.persist, w.persist, r.persist_days == null ? '' : `${r.persist_days}/5 天在榜`],
+    [
+      '空间高度',
+      d.height,
+      w.height,
+      r.max_lbc ? `最高 ${r.max_lbc} 板${r.lbc2 ? `、二板+ ${r.lbc2} 只` : ''}` : '',
+    ],
+    [
+      '资金容量',
+      d.capacity,
+      w.capacity,
+      r.amt ? `${(Number(r.amt) / 1e8).toFixed(1)} 亿` : '',
+    ],
+  ]
+  return (
+    <div style={{ fontSize: 12, lineHeight: 1.85 }}>
+      <div style={{ fontWeight: 600, marginBottom: 2 }}>
+        四维打分明细（候选池内归一化，总分 {f1(r?.score)}）
+      </div>
+      {rows.map(([k, v, ww, raw]) => (
+        <div key={k}>
+          {k}：<b>{f1(v)}</b>
+          <span style={{ opacity: 0.78 }}> × 权重 {ww}</span>
+          {raw ? <span style={{ opacity: 0.78 }}>（{raw}）</span> : null}
+        </div>
+      ))}
+      <div style={{ marginTop: 4, opacity: 0.78 }}>
+        某维在候选池内无区分力（标准差 &lt; 0.05）时，权重会按比例转移给其余维度
+      </div>
+    </div>
+  )
+}
+
 function ConceptEmotion({ concept, onOpenStock }) {
   const c = concept || {}
   if (!c.available) {
@@ -994,6 +1133,7 @@ function ConceptEmotion({ concept, onOpenStock }) {
           主线题材与周期阶段
         </Text>
         <Hint k="concept_roles" />
+        <Hint k="theme_qual" />
         <Tag
           style={{ marginInlineStart: 8 }}
           color={c.source === 'live' ? 'green' : 'blue'}
@@ -1004,6 +1144,36 @@ function ConceptEmotion({ concept, onOpenStock }) {
           {c.hist_used ? '周期判定：近 N 日序列' : '周期判定：当日强度'}
         </Tag>
       </Divider>
+      {/* 主线格局（V1.009.5）：今天到底有没有主线 + 主线切换 —— 变化比常态更值得提示 */}
+      {(c.market_state || c.main_switch) && (
+        <Space size={[8, 6]} wrap style={{ marginBottom: 8 }}>
+          <Tag color={stateColor(c.market_state)}>
+            {c.market_state}（核心主线 {c.mains_count ?? 0} 个）
+          </Tag>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {c.market_state_note}
+          </Text>
+          <Hint k="theme_switch" />
+          {(c.main_switch?.new || []).length > 0 && (
+            <span>
+              <Text style={{ fontSize: 12 }}>新进核心：</Text>
+              {(c.main_switch?.new || []).map((x) => (
+                <Tag key={x.code} color="red">
+                  {x.name}
+                </Tag>
+              ))}
+            </span>
+          )}
+          {(c.main_switch?.drop || []).length > 0 && (
+            <span>
+              <Text style={{ fontSize: 12 }}>掉榜：</Text>
+              {(c.main_switch?.drop || []).map((x) => (
+                <Tag key={x.code}>{x.name}</Tag>
+              ))}
+            </span>
+          )}
+        </Space>
+      )}
       <Table
         size="small"
         rowKey="code"
@@ -1044,12 +1214,76 @@ function ConceptEmotion({ concept, onOpenStock }) {
           {
             title: (
               <span>
+                赛道
+                <Hint k="theme_track" />
+              </span>
+            ),
+            dataIndex: 'track',
+            width: 104,
+            // 点表头按赛道排序 —— 同赛道自然聚到一起，这是「折叠」的轻量替代。
+            // 真折叠要按赛道对涨停股**去重**（一只票可同时属于该赛道的多个概念），
+            // 而每行只下发了前 12 只涨停股，前端相加会重复计数。
+            sorter: (a, b) =>
+              String(a.track || '').localeCompare(String(b.track || ''), 'zh'),
+            render: (v, r) =>
+              v ? (
+                <Tag
+                  color={r.track_cross ? undefined : 'blue'}
+                  style={r.track_cross ? { borderStyle: 'dashed', color: '#8c8c8c' } : undefined}
+                >
+                  {v}
+                </Tag>
+              ) : (
+                '-'
+              ),
+          },
+          {
+            title: (
+              <span>
+                档位
+                <Hint k="theme_tier" />
+              </span>
+            ),
+            dataIndex: 'tier',
+            width: 84,
+            render: (v) => tierTag(v),
+          },
+          {
+            title: (
+              <span>
+                总分
+                <Hint k="theme_score" />
+              </span>
+            ),
+            dataIndex: 'score',
+            width: 76,
+            defaultSortOrder: 'descend',
+            sorter: (a, b) => (a.score || 0) - (b.score || 0),
+            render: (v, r) =>
+              v == null ? (
+                '-'
+              ) : (
+                <Tooltip title={dimsDetail(r)} overlayStyle={{ maxWidth: 360 }}>
+                  <b
+                    style={{
+                      cursor: 'help',
+                      color: r.tier === 'core' ? RED : undefined,
+                    }}
+                  >
+                    {Number(v).toFixed(3)}
+                  </b>
+                </Tooltip>
+              ),
+          },
+          {
+            title: (
+              <span>
                 涨跌幅
                 <Hint k="concept_pct" />
               </span>
             ),
             dataIndex: 'pct',
-            width: 92,
+            width: 88,
             render: (v) => <span style={{ color: pctColor(v) }}>{fmtPct(v)}</span>,
           },
           {
@@ -1060,18 +1294,31 @@ function ConceptEmotion({ concept, onOpenStock }) {
               </span>
             ),
             dataIndex: 'zt_count',
-            width: 66,
+            width: 60,
           },
           {
             title: (
               <span>
-                占板块比
+                聚焦度
                 <Hint k="concept_ratio" />
               </span>
             ),
             dataIndex: 'ratio',
-            width: 92,
+            width: 88,
             render: (v) => (v == null ? '-' : `${v}%`),
+          },
+          {
+            title: (
+              <span>
+                持续
+                <Hint k="theme_persist" />
+              </span>
+            ),
+            dataIndex: 'persist_days',
+            width: 74,
+            // 分母用当日实际窗口 c.theme_win，不能硬编码 5：回看窗口最开头那几天
+            // 可用历史不足 5 日，写死 5 会把「1/1 天」显示成「1/5 天」（等于谎报漏了 4 天）
+            render: (v) => (v == null ? '-' : `${v}/${c.theme_win ?? 5} 天`),
           },
           {
             title: (
@@ -1081,7 +1328,7 @@ function ConceptEmotion({ concept, onOpenStock }) {
               </span>
             ),
             dataIndex: 'stage',
-            width: 96,
+            width: 92,
             render: (v) => <Tag color={stageColor(v)}>{v}</Tag>,
           },
           { title: '判定依据', dataIndex: 'reason', ellipsis: true },
