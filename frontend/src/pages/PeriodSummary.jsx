@@ -156,7 +156,14 @@ export default function PeriodSummary() {
     () => ({ title: editTitle, content: editContent }),
     [editTitle, editContent]
   )
-  const { checkDraft, clear: clearDraftDraft, hasDraft, draftTime } = useDraft(editDraftKey, {
+  const {
+    checkDraft,
+    clear: clearDraftDraft,
+    markClean: markDraftClean,
+    markSaved: markDraftSaved,
+    hasDraft,
+    draftTime,
+  } = useDraft(editDraftKey, {
     formData: editOpen ? editFormData : null, // 弹窗关闭时不自动保存
   })
 
@@ -254,9 +261,15 @@ export default function PeriodSummary() {
   const openEdit = () => {
     const p = normalizePeriod(periodMode, periodDate)
     if (!p) return
-    setEditDraftKey(draftKeyOf(periodMode, p, summaryType))
-    setEditTitle(curReview?.title || '')
-    setEditContent(curReview?.content || '')
+    const key = draftKeyOf(periodMode, p, summaryType)
+    const title = curReview?.title || ''
+    const content = curReview?.content || ''
+    setEditDraftKey(key)
+    setEditTitle(title)
+    setEditContent(content)
+    // V1.009.10：预填的是「已落库」内容 → 登记草稿基线。
+    // 否则打开弹窗什么都没改，也会生成一份与库里相同的草稿，下次打开误报「已恢复草稿」。
+    markDraftClean({ title, content }, key)
     setDraftTip(false)
     setEditOpen(true)
   }
@@ -316,7 +329,8 @@ export default function PeriodSummary() {
       if (curReview) await updatePhaseReview(curReview.id, payload)
       else await savePhaseReview(payload)
       message.success('已保存')
-      clearDraftDraft() // 保存成功 → 清除草稿
+      // V1.009.10：保存成功 → 登记基线 + 清草稿（只 clear 会被自动写回）
+      markDraftSaved({ title: editTitle, content: editContent })
       setDraftTip(false)
       setEditOpen(false)
       loadReview()
@@ -342,9 +356,10 @@ export default function PeriodSummary() {
 
   const handleDiscardDraft = () => {
     clearDraftDraft()
-    setDraftTip(false)
+    // 内容回到库里的值（= openEdit 时登记的基线）→ 不会再生成一份相同的草稿
     setEditTitle(curReview?.title || '')
     setEditContent(curReview?.content || '')
+    setDraftTip(false)
     message.info('已清空草稿')
   }
 

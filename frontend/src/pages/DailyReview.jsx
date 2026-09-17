@@ -2280,6 +2280,8 @@ export default function DailyReview() {
   const draft = useDraft(draftKey, {
     formData: manual ? { manual } : null,
   })
+  // 单独取出来用：markClean 是稳定引用，放进 loadByDate 的依赖数组不会引起重建
+  const markDraftClean = draft.markClean
 
   // 载入某交易日：本地记录（手写 / AI）+ 盘面快照（缓存优先）
   const loadByDate = useCallback(async (d) => {
@@ -2294,7 +2296,14 @@ export default function DailyReview() {
     try {
       const r = await getDailyReviewByDate(ds)
       setRecordId(r.id)
-      setManual(r.manual_content || '')
+      const mc = r.manual_content || ''
+      setManual(mc)
+      // V1.009.10：接口回填的是「已落库」内容，登记为草稿基线。
+      // 否则 400ms 后会自动存一份与库里完全相同的草稿 →
+      // 切走再切回该日期就误弹「检测到未保存的草稿」。
+      // ⚠️ 第二参必须传**完整草稿 key**（`daily_review:<日期>`），不是裸日期字符串，
+      //    否则基线挂在另一个 key 下、effect 查不到，草稿照样会被写出来。
+      markDraftClean({ manual: mc }, `daily_review:${ds}`)
       setAiContent(r.ai_content || '')
       setAiAt(r.ai_created_at || '')
       if (r.market_json) {
@@ -2319,7 +2328,7 @@ export default function DailyReview() {
     } finally {
       setSnapLoading(false)
     }
-  }, [])
+  }, [markDraftClean])
 
   useEffect(() => {
     loadByDate(date)
@@ -2382,7 +2391,10 @@ export default function DailyReview() {
         market_json: snap ? JSON.stringify(snap) : '',
       })
       setRecordId(r.id)
-      draft.clear()
+      // V1.009.10：保存成功 → 登记基线 + 清草稿（markSaved）。
+      // 不能只 clear() —— 内容与基线不同，400ms 后会被自动写回，
+      // 页面就一直挂着「有草稿」Tag，切日期还会弹「检测到未保存的草稿」。
+      draft.markSaved({ manual })
       message.success('复盘已保存')
     } catch (e) {
       /* ignore */
