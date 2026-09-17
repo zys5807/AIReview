@@ -49,6 +49,7 @@ _*.py
 _*.json
 _*.png
 _*.mjs
+_*.sh
 _*.txt
 backend/_*
 
