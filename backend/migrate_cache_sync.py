@@ -6,10 +6,15 @@
     三重验证过。重跑一遍联网重建（1.5 分钟、要拉 400+ 只个股日K）不仅慢，
     还会产生一份**没被验证过**的数据。直接搬已验证的那份，结果确定。
 
-只动 3 张**纯缓存**表：
-    daily_market_cache   65 日盘面快照（新口径主线）
-    market_cache_meta    board_hist（504 板块 × 65 日序列，持续性维度依赖）
+只动 5 张**纯缓存**表（V1.009.9 起把 K 线也纳入）：
+    daily_market_cache   盘面快照（新口径主线 / 情绪周期阶段 / 中军 / 一字板）
+    market_cache_meta    board_hist（504 板块 × N 日序列，持续性维度依赖）
     board_member_cache   504 板块成分股（角色分层依赖）
+    stock_kline_cache    个股日K —— ⚠️ V1.009.8 把 bar 由 7 元组扩到 **11 元组**
+                         （新增前复权开/低、不复权开/低），旧库里的 7 元组靠 `_pad7`
+                         补 None 不报错，但**一字板 `ow_n` 会在历史日恒为 0**（静默降级），
+                         所以必须换。
+    stock_hot_rank_cache 热度榜时序（概念涨幅榜 / 热度榜依赖）
 用户数据表（trades / daily_reviews / users / phase_reviews / account_flows …）**一律不动**，
 迁移前后逐表比对行数。
 """
@@ -20,7 +25,10 @@ import shutil
 import sqlite3
 import sys
 
-CACHE_TABLES = ['daily_market_cache', 'market_cache_meta', 'board_member_cache']
+CACHE_TABLES = [
+    'daily_market_cache', 'market_cache_meta', 'board_member_cache',
+    'stock_kline_cache', 'stock_hot_rank_cache',
+]
 USER_TABLES = [
     'users', 'trades', 'trade_position_actions', 'trade_plans', 'trade_screenshots',
     'screenshots', 'daily_reviews', 'phase_reviews', 'market_reviews', 'review_reports',
@@ -47,6 +55,8 @@ def main():
     ap.add_argument('--dst', default=r'F:/Trading/复盘APP/AIReviewSystem/app.db')
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--no-backup', action='store_true')
+    ap.add_argument('--tag', default='v1.009.9',
+                    help='备份文件名里的版本标签，如 v1.009.9')
     args = ap.parse_args()
 
     for p in (args.src, args.dst):
@@ -78,7 +88,7 @@ def main():
     # 备份
     if not args.no_backup:
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        bak = args.dst + '.bak_v1.009.4_' + ts
+        bak = args.dst + '.bak_' + args.tag + '_' + ts
         shutil.copy2(args.dst, bak)
         print('已备份 → %s  (%.1f MB)' % (bak, os.path.getsize(bak) / 1048576))
 

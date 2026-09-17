@@ -301,6 +301,7 @@ def _zt_stocks(tc: int, pool: list) -> dict:
         name = (it.get("n") or "").replace(" ", "")
         zttj = it.get("zttj") or {}
         days, ct = zttj.get("days"), zttj.get("ct")
+        _fbt = _fmt_time(it.get("fbt"))
         stocks.append({
             "code": it.get("c"),
             "name": name,
@@ -310,12 +311,18 @@ def _zt_stocks(tc: int, pool: list) -> dict:
             "ltsz": it.get("ltsz") or 0,
             "hs": round(it.get("hs") or 0, 2),
             "lbc": int(it.get("lbc") or 1),
-            "fbt": _fmt_time(it.get("fbt")),
+            "fbt": _fbt,
             "lbt": _fmt_time(it.get("lbt")),
             "zbc": int(it.get("zbc") or 0),
             "industry": it.get("hybk") or "",
             "stat": ("%s天%s板" % (days, ct)) if days and ct else "",
             "is_st": _is_st(name),
+            # 实时日的一字板代理：竞价阶段（≤09:25:30）就封板且全天未开板（zbc=0）。
+            # 历史日走 is_one_word_board（四价全等，见 roles_ctx_build）——两条路径的
+            # **语义**都是「开盘即涨停且从未打开」，但实时日盘中拿不到 OHLC，
+            # 只能用 fbt/zbc 代理。前端文案必须区分措辞（见报告 note）。
+            "ow": bool(_fbt and _fbt <= "09:25:30"
+                       and int(it.get("zbc") or 0) == 0),
         })
     stocks.sort(key=lambda x: (-x["lbc"], x["fbt"] or "99:99:99"))
 
@@ -904,14 +911,19 @@ def roles_ctx_build(klines: dict, names: dict | None = None,
         for _bar in rows:
             d, close = _bar[0], _bar[1]
             _fl = 0
+            _ow = 0
             if prev is not None and prev > 0:
                 m[d] = (close - prev) / prev * 100.0
                 # 只有相邻交易日才能判涨跌停（停牌断档后首日不适用，故也不续连板）
                 if prev_bar is not None and prev_d in apos and d in apos \
                         and apos[d] - apos[prev_d] == 1:
-                    _fl, _zbh, _ = limit_state(prev_bar, _bar, code, nm)
+                    _fl, _zbh, _ulp = limit_state(prev_bar, _bar, code, nm)
                     if _fl:
                         lim[d] = _fl
+                        # 一字板：开=收=低=高=当日涨停价（四价全用不复权）。
+                        # 只有收盘涨停才可能是一字板；容差 5 厘（见 is_one_word_board）。
+                        if _fl == 1 and is_one_word_board(_bar, _ulp):
+                            _ow = 1
                     elif _zbh is not None:
                         # 2 = 炸板（触板未封）。V1.009.7 新增，板块炸板率要用。
                         lim[d] = 2
@@ -923,7 +935,7 @@ def roles_ctx_build(klines: dict, names: dict | None = None,
                 if _b0 and close:
                     cum = (close - _b0) / _b0 * 100.0
             ex[d] = [round(bar_amount(_bar) or 0.0, 0), lbc or None,
-                     None if cum is None else round(cum, 3)]
+                     None if cum is None else round(cum, 3), _ow]
             prev, prev_bar, prev_d = close, _bar, d
         if m:
             out_pct[code] = m
@@ -950,10 +962,13 @@ def roles_ctx_live(snap_rows: list[dict], zt_stocks: list[dict] | None,
     lim_m: dict = {}
     ex_m: dict = {}
     lbc_map: dict = {}
+    ow_set: set = set()
     for s in (zt_stocks or []):
         c = s.get("code")
         if c:
             lbc_map[c] = int(s.get("lbc") or 1)
+            if s.get("ow"):
+                ow_set.add(c)
 
     # 截至昨日的收盘序列 → (N 个交易日前收盘, 昨收)，用于外推当日累计涨幅
     prev_ref: dict = {}
@@ -981,7 +996,8 @@ def roles_ctx_live(snap_rows: list[dict], zt_stocks: list[dict] | None,
         pct_m.setdefault(c, {})[date_str] = p
         ex_m.setdefault(c, {})[date_str] = [
             round(float(r.get("amount") or 0.0), 0), lbc or None,
-            None if cum is None else round(cum, 3)]
+            None if cum is None else round(cum, 3),
+            1 if c in ow_set else 0]
         if lbc:
             lim_m.setdefault(c, {})[date_str] = 1
     return {"pct": pct_m, "lim": lim_m, "extra": ex_m}
@@ -1257,6 +1273,49 @@ _EMO_ICE_UPR = 0.35
 _EMO_FADE_RS = -0.8         # 退潮（活跃态内）：明显转弱
 _EMO_FADE_UPR = 0.40
 _EMO_FADE_ZT = 1
+
+# ---- V1.009.8 判据层新增字段（中军 + 一字板）----
+# 用户裁定（2026-09-17）：
+#   「中军收益率大于零做**高潮**的硬条件，不做发酵和启动的硬条件」
+#   「（一字板）只作展示 + 高潮佐证」
+#
+# ⚠️ 标定实测（`_calib_judge.py`，840 条 main_lines，70 天）说明为什么不能推广：
+#   jun_pct 按阶段中位 → 启动 +2.770 > 发酵 +2.045 > 高潮 +1.253 > 分歧 +1.164
+#                        > 潜伏 +0.519 > 退潮 -2.030
+#   **中军在「启动」最强、在「高潮」反而更低**，与扩散度 / 板块涨幅同向。
+#   故把它设成发酵 / 启动的准入会让「启动」整体被拒绝（语义搞反）；
+#   而 `jun_pct > 0` 的活跃/非活跃区分倍数仅 1.33×（阈值 1.0 时反而 1.66×最强）。
+#
+# 退潮为什么用**加分项**而不是硬条件（逻辑推导）：
+#   退潮是「判负」，`jun_pct <= 0` 是**负向证据**。
+#   写成硬条件（且）→ 要多一腿才成立 → 退潮**更难触发**，方向搞反；
+#   写成加分项（或）→ 有独立触发权 → 退潮**更易触发**，方向正确。
+#   实测：退潮组仅 7.1% 中军为正（jun<=0 命中 92.9%），其余组约 27% —— 值得给它触发权。
+#   ⚠️ 但不能单靠中军判退潮（潜伏组约 40% 中军也为负）→ 必须加 rs/upr 护栏。
+_EMO_JUN_ON = 0.0           # 中军平均涨幅门槛（严格 >；**只用于高潮**）
+_EMO_FADE_JUN_RS = 0.0      # 退潮·中军腿护栏①：板块须已跑输大盘（rs < 0）
+_EMO_FADE_JUN_UPR = 0.50    # 退潮·中军腿护栏②：扩散度须已走弱（upr < 0.5）
+_EMO_OW_STRONG = 2          # 一字板 >= 此家数 = 一致性极强（**仅作高潮佐证，不改判定**）
+
+# ---- V1.009.9 判据层：分歧的「扩散未走弱」护栏 ----
+# 用户裁定（2026-09-17）：PCB 9/14 应为**发酵**而非分歧。
+#
+# 根因（数据定位）：A3 分歧原判据 `is_split = (zb_up or brk_n >= 2)` 是**单腿**的，
+#   只看「有没有撕裂」，不看「扩散有没有一起走弱」。而实测 brk_n>=2 在活跃态内
+#   命中率高到失去区分度（发酵 19% / 分歧 97%）—— 真正的差异在 up_r：
+#     发酵组 up_r 中位 0.804  |  分歧组 up_r 中位 0.692
+#   9/14 PCB 正是「撕裂但扩散仍在高位」（up_r=0.761、涨停 8 家、龙头 2→3 板创新高），
+#   属**内部换手**，不是养家定义的「龙头首阴」。
+#
+# 为什么不能加 `hi_rising`（龙头创新高）护栏 —— 已实测否决：
+#   活跃态内「创新高」在分歧组占 52%、发酵组仅 40%，**方向是反的**（0.77x）。
+#   （先前看到的「28% vs 8% / 3.5×」是没隔离活跃态、混进潜伏冰点所致的假象。）
+#
+# 阈值 0.70 的选取（_calib_combo.py 扫过 0.70/0.75/0.80）：
+#   0.70 → 判别力 0.09x，9/14 判发酵 ✅
+#   0.80 → 判别力 0.12x，但 9/14（0.761）仍判分歧 ❌
+# 取 0.70：判别力最强且满足用户诉求。
+_EMO_SPLIT_UPR = 0.70       # 分歧护栏：扩散度须已走弱（up_r < 此值）
 
 
 def _rank_pct(pairs: list) -> dict:
@@ -1782,9 +1841,35 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                     _d2["again"] += 1
                 if isinstance(_it.get("pct"), (int, float)):
                     _d2["ps"].append(_it["pct"])
-                # 断板 = 昨日连板（≥2 板）今日未再涨停
-                if int(_it.get("prev_lbc") or 1) >= 2 and not _it.get("again_limit_up"):
+                # 断板 = 昨日**涨停**股（含首板）今日未再涨停 —— 与重建路径同口径
+                # （曾经用 prev_lbc >= 2 只算连板断板，会让断板面系统性少算首板，
+                #   9/15 PCB 真断板 7 只只数到 1 只）
+                if not _it.get("again_limit_up"):
                     _d2["brk"] += 1
+        # 每板块的**中军**（流通市值 top3）名单与当日涨幅 —— 与重建路径同口径。
+        # 名单按流通市值静态取定 top3（不逐日重排，否则等于用未来信息），
+        # **不排除涨停股**（涨停的中军是最强信号）。硬条件：jun_pct > 0。
+        _jun_by_board: dict = {}
+        if roles_members and roles_ctx:
+            _live_pct = (roles_ctx or {}).get("pct") or {}
+            for _bc, _bi in roles_members.items():
+                _ms = []
+                for _m in (_bi.get("members") or []):
+                    _c2 = _m.get("code")
+                    _cap = float(_m.get("float_cap") or _m.get("mktcap") or 0)
+                    if _c2 and _cap > 0:
+                        _ms.append((_c2, _m.get("name") or "", _cap))
+                if not _ms:
+                    continue
+                _ms.sort(key=lambda x: -x[2])
+                _t3 = _ms[:3]
+                _ps3 = [(_live_pct.get(x[0]) or {}).get(date_str) for x in _t3]
+                _ps3 = [v for v in _ps3 if isinstance(v, (int, float))]
+                _jun_by_board[_bc] = {
+                    "jun": [{"code": x[0], "name": x[1], "cap": x[2]} for x in _t3],
+                    "jun_pct": (round(sum(_ps3) / len(_ps3), 3) if _ps3 else None),
+                    "jun_n": len(_ps3),
+                }
         _lbm = {c["code"]: (int(c.get("lbc_max") or 0), int(c.get("lbc2") or 0))
                 for c in contrib}
         _lrows: list = []
@@ -1812,6 +1897,10 @@ def concept_emotion(boards: list[dict], zt_stocks: list[dict] | None = None,
                 "zt_r": (round(_z / _sz, 4) if _sz else None),
                 "up_r": (round(_up / _sz, 4) if _sz else None),
                 "zb_r": (round(_zb / (_z + _zb), 4) if (_z + _zb) else None),
+                # ---- V1.009.8：中军（流通市值 top3 平均涨幅）----
+                "jun": (_jun_by_board.get(_bc) or {}).get("jun") or [],
+                "jun_pct": (_jun_by_board.get(_bc) or {}).get("jun_pct"),
+                "jun_n": (_jun_by_board.get(_bc) or {}).get("jun_n") or 0,
             })
         # 当日横截面分位（与 attach_board_phases 的 ① 同一算法，规模歧视靠它消除）
         _zs = sorted(_emo_z(r) for r in _lrows if _emo_eligible(r))
@@ -2315,20 +2404,37 @@ def limit_base(prev_bar, bar, code: str = "", name: str = "") -> tuple:
     pct_r = (rc - rp) / rp * 100.0
     if abs(pct_r - pct_q) > (2.5 / rp + 0.02):
         cand = float(qp * rc / qc)
-        # 交叉校验：**价格不可能超过涨停价**。若当日最高价已越出候选基数对应的涨停价，
-        # 说明候选偏低 —— 前复权因子存在假跳变（实测 301151 冠龙节能 2026-08-31：
-        # 同花顺 17.08/20.54 给出的基数 17.2465 会推出涨停价 20.70，而当日实际成交
-        # 20.74，交易所公布的涨跌幅 20.02% 也证明当天并未除权）。此时以不复权前收为准。
-        # 用**最大**候选比例做校验，避免把 ST 摘帽（5%→10%）误判成假跳变。
         hi = bar_high_raw(bar)
         if hi is None:
             hi = bar_high(bar)
-        if hi is not None:
-            _r0 = max(_limit_rates(code, name))
-            if cand > 0:
-                lp = _limit_price(cand, code, name, True, rate=_r0)
-                if lp and hi > lp + _LIMIT_TOL_EXDIV:
-                    return float(rp), _LIMIT_TOL
+        # 校验用**该股当日实际适用的比例**（由最高价反推，见 _limit_rate_for），
+        # 不能用「最大候选比例」—— 依顿电子是主板 10%，若按 20% 算，候选涨停价
+        # 17.13 与 B 涨停价 17.13 会同时偏离 hi=14.31，双向校验都失效。
+        _r0 = (_limit_rate_for(float(rp), code, name, hi, _LIMIT_TOL)
+               if hi is not None else None)
+        # 交叉校验（双向）——前复权因子存在**假跳变**时两口径 pct 会误判为除权日，
+        # 必须靠「哪个基数算出的涨停价更贴近当日实际价」来纠偏。
+        #
+        #   ① 候选**偏低**：当日最高价越出了候选基数对应的涨停价。
+        #      实测 301151 冠龙节能 2026-08-31：同花顺 17.08/20.54 给出基数 17.2465
+        #      → 涨停价 20.70，而当日实际成交 20.74，交易所涨跌幅 20.02% 也证明当天
+        #      并未除权。此处用**最大**候选比例，避免把 ST 摘帽（5%→10%）误判成假跳变。
+        #
+        #   ② 候选**偏高**：候选基数推出的涨停价远高于当日实际最高价，而「不复权前收」
+        #      推出的涨停价恰好命中最高价。实测 603328 依顿电子 2026-09-16：
+        #      同花顺前复权 13.01 → 13.04（+0.23%）而不复权 13.01 → 14.31（+9.99%涨停），
+        #      两口径 pct 差 9.76pct 触发了除权判定，候选给出 14.2771 → 涨停价 15.70，
+        #      但当日最高仅 14.31 —— 真相是**前复权把 9/16 的历史价按后续除权回溯重排**了，
+        #      当日并未除权，基准就是不复权前收 13.01（涨停价 14.3110 ≈ 14.31，精确命中）。
+        if hi is not None and cand > 0:
+            lp = _limit_price(cand, code, name, True, rate=max(_limit_rates(code, name)))
+            if lp and hi > lp + _LIMIT_TOL_EXDIV:
+                return float(rp), _LIMIT_TOL        # ① 候选偏低 → 回退不复权前收
+            lp = _limit_price(cand, code, name, True, rate=_r0)
+            lp_b = _limit_price(float(rp), code, name, True, rate=_r0)
+            if lp and lp_b and lp > hi + _LIMIT_TOL_EXDIV \
+                    and abs(float(hi) - lp_b) < _LIMIT_TOL:
+                return float(rp), _LIMIT_TOL        # ② 候选偏高且 B 精确命中 → 回退
         return cand, _LIMIT_TOL_EXDIV        # 除权日 → 除权参考价
     return float(rp), _LIMIT_TOL             # 非除权日 → 不复权前收（精确）
 
@@ -2337,10 +2443,14 @@ def limit_state(prev_bar, bar, code: str, name: str = "") -> tuple:
     """单根K线的涨跌停/炸板状态 → (flag, zb_high, zt_price)
 
     flag：1 = 收盘涨停、-1 = 收盘跌停、0 = 都不是
-    zb_high / zt_price：仅当**炸板**（盘中最高价触及涨停价但收盘未封住）时非 None
+    zb_high：仅当**炸板**（盘中最高价触及涨停价但收盘未封住）时非 None
+    zt_price：当日涨停价，**任何情况下都返回**（供一字板判定使用）
 
     四个调用点（板块重建、全市场重建、昨涨停今表现、炸板回溯）共用同一判定，
     避免各处口径漂移。涨跌停一律用**不复权**价比较（除权参考价口径见 limit_base）。
+
+    zt_price 曾经只在炸板时返回，导致「收盘涨停」的票拿不到涨停价，一字板无法判定
+    （华瓷股份 2026-09-16 四价全等 18.07，因 ulp=None 而被漏判）。现改为恒返回。
     """
     base, tol = limit_base(prev_bar, bar, code, name)
     if not base or base <= 0:
@@ -2357,12 +2467,12 @@ def limit_state(prev_bar, bar, code: str, name: str = "") -> tuple:
     ulp = _limit_price(base, code, name, True, rate=r)
     dlp = _limit_price(base, code, name, False, rate=r)
     if ulp and abs(float(close) - ulp) < tol:
-        return 1, None, None
+        return 1, None, ulp
     if dlp and abs(float(close) - dlp) < tol:
-        return -1, None, None
+        return -1, None, ulp
     if high is not None and ulp and high >= ulp - tol:
         return 0, float(high), ulp
-    return 0, None, None
+    return 0, None, ulp
 
 
 def _limit_threshold(code: str, name: str = "") -> float:
@@ -2396,8 +2506,12 @@ def _sina_kline(code: str, datalen: int):
             hi = x.get("high")
             cl = float(x["close"])
             h = float(hi) if hi not in (None, "") else None
+            op = x.get("open")
+            lo = x.get("low")
+            o = float(op) if op not in (None, "") else None
+            lw = float(lo) if lo not in (None, "") else None
             out.append((_norm_date(x["day"]), cl, float(x.get("volume") or 0),
-                        None, h, cl, h))
+                        None, h, cl, h, o, lw, o, lw))
         except Exception:  # noqa: BLE001
             continue
     return out or None
@@ -2441,16 +2555,29 @@ def _tx_kline(code: str, datalen: int):
         try:
             cl = float(b[2])
             h = float(b[3]) if len(b) > 3 and b[3] not in (None, "") else None
-            out.append((_norm_date(b[0]), cl, float(b[5] or 0) * unit, None, h, cl, h))
+            o = float(b[1]) if len(b) > 1 and b[1] not in (None, "") else None
+            lo = float(b[4]) if len(b) > 4 and b[4] not in (None, "") else None
+            out.append((_norm_date(b[0]), cl, float(b[5] or 0) * unit, None, h,
+                        cl, h, o, lo, o, lo))
         except Exception:  # noqa: BLE001
             continue
     return out or None
 
 
 def _ths_parse(sym: str, flag: str) -> dict:
-    """同花顺某一复权口径的日K → {日期: (高, 收, 量股, 额元|None)}
+    """同花顺某一复权口径的日K → {日期: (开, 高, 低, 收, 量股, 额元|None)}
+
+    data 列序：p[0]日期 p[1]开 p[2]高 p[3]低 p[4]收 p[5]成交量(股) p[6]成交额(元)
+              p[7]换手率 p[8]空 p[9]? p[10]?
 
     flag：`01` 前复权 / `00` 不复权。价格与成交量都随口径变化，成交额不变。
+
+    **open / low 必须保留**：一字板判定 `开=收=低=高=当日涨停价` 只能靠它们
+    （2026-09-17 之前把 p[1]/p[3] 直接丢弃，导致一字板在数据结构上就判不了）。
+
+    **最新交易日可能是残缺行**：服务端在收盘后一段时间内对当日会返回
+    `20260916,,,,9.54,0,0.00,0.000,,,0` —— 开/高/低/量/额全空、只有收盘价。
+    此时 open/high/low 全为 None，`_ths_kline` 的调用方需回退到其它源。
     """
     r = md._fetch(_THS_LINE % (sym, flag), headers=_THS_HEADERS, timeout=10, retries=1)
     if not r:
@@ -2466,10 +2593,21 @@ def _ths_parse(sym: str, flag: str) -> dict:
             continue
         try:
             amt = float(p[6])
-            d[_norm_date(p[0])] = (float(p[2]), float(p[4]), float(p[5]),
-                                   amt if amt > 0 else None)
         except Exception:  # noqa: BLE001
             continue
+
+        def _f(i):
+            """空串/缺失 → None（残缺行里 p[1]/p[2]/p[3] 是空串）"""
+            v = p[i].strip() if i < len(p) else ""
+            if not v:
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
+
+        d[_norm_date(p[0])] = (_f(1), _f(2), _f(3), _f(4), _f(5),
+                              amt if amt > 0 else None)
     return d
 
 
@@ -2488,8 +2626,17 @@ def _ths_kline(code: str, datalen: int):
                  09-04 前复权 188.28 / 不复权 188.37，导致 09-07 涨停价算成 207.11
                  而实际为 207.21，收盘涨停被误判成炸板。
 
-    返回 [(date, close_qfq, volume, amount, high_qfq, close_raw, high_raw)]。
-    不复权请求失败时末两位为 None，调用方退化为用前复权判定（即改造前行为）。
+    返回 11 元组：
+      [0]日期 [1]前复权收 [2]量(股) [3]额(元) [4]前复权高
+      [5]不复权收 [6]不复权高 [7]前复权开 [8]前复权低
+      [9]不复权开 [10]不复权低
+
+    不复权请求失败 / 该日无不复权行时，[5][6][9][10] 为 None，调用方退化为用
+    前复权判定（即改造前行为）。[7][8] 是一字板判定的基础，缺失时值为 None。
+
+    **为什么 open/low 要分两个口径存**：涨跌停价是按「不复权前收」算的，所以
+    一字板/涨停判定必须四价同为**不复权**；而涨跌幅连续性、图形展示走前复权。
+    混用会让除权日的判定全错。
     """
     sym = _norm_symbol(code).lstrip("shzbj")
     q = _ths_parse(sym, "01")
@@ -2497,9 +2644,18 @@ def _ths_kline(code: str, datalen: int):
         return None
     raw = _ths_parse(sym, "00")
     out = []
-    for date, (hi, cl, vol, amt) in q.items():
-        rh, rc = (raw.get(date) or (None, None))[:2] if raw else (None, None)
-        out.append((date, cl, vol, amt, hi, rc, rh))
+    for date, (qo, hi, lo, cl, vol, amt) in q.items():
+        # 不复权行可能整行没有（两个口径的 140 日窗口会滑动错位——实测
+        # bfq 窗口整体前移一天：多一天 2026-02-25、少一天最新日），
+        # 也可能存在但为残缺行（开/高/低全空）。两种都退化为 None，
+        # 由调用方在 limit_state 里回退到前复权口径。
+        r = raw.get(date)
+        rc = rh = ro = rl = None
+        if r and r[3] is not None:
+            # 只要收盘有效就认为该行可用；开/低单独判空（残缺行只给收盘）。
+            rc, rh = r[3], r[1]
+            ro, rl = r[0], r[2]
+        out.append((date, cl, vol, amt, hi, rc, rh, qo, lo, ro, rl))
     out.sort(key=lambda x: x[0])
     return out or None
 
@@ -2523,6 +2679,27 @@ def bar_high(b) -> float | None:
     if len(b) <= 4:
         return None
     v = b[4]
+    try:
+        return float(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def bar_close(b) -> float | None:
+    """单根K线的**前复权**收盘价（= `b[1]`，涨跌幅 *与图形* 一律用它）
+
+    与 `bar_close_raw` 的分工必须严格：
+      前复权收 → 涨跌幅（跨除权日连续可比，等于交易所公布的官方涨跌幅）、
+                 累计涨幅、接力溢价 / 晋级率的涨幅部分
+      **不复权收 → 涨跌停 / 炸板 / 连板 / 断板 / 空间高度 的一切价判定**
+    混用会让除权日附近的每一天都算错，且**不报错**（见 limit_base 的推导）。
+
+    提供本 getter 的目的是**消灭 `b[1]` 裸取** —— 裸取时读代码的人无法一眼判断
+    这里用的是哪个口径，"该用不复权却写了前复权" 是最难发现的一类 bug。
+    """
+    if len(b) <= 1:
+        return None
+    v = b[1]
     try:
         return float(v) if v is not None else None
     except Exception:  # noqa: BLE001
@@ -2564,6 +2741,84 @@ def bar_amount(b) -> float:
     return float(close) * float(vol or 0)
 
 
+def bar_open(b) -> float | None:
+    """单根K线的前复权开盘价；无该位（<8 元组旧缓存）返回 None"""
+    if len(b) <= 7:
+        return None
+    v = b[7]
+    try:
+        return float(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def bar_low(b) -> float | None:
+    """单根K线的前复权最低价；无该位（<9 元组旧缓存）返回 None"""
+    if len(b) <= 8:
+        return None
+    v = b[8]
+    try:
+        return float(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def bar_open_raw(b) -> float | None:
+    """单根K线的不复权开盘价（一字板判定用）；无该位返回 None"""
+    if len(b) <= 9:
+        return None
+    v = b[9]
+    try:
+        return float(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def bar_low_raw(b) -> float | None:
+    """单根K线的不复权最低价（一字板判定用）；无该位返回 None"""
+    if len(b) <= 10:
+        return None
+    v = b[10]
+    try:
+        return float(v) if v is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_one_word_board(bar, ulp: float, tol: float = 0.005) -> bool:
+    """一字板判定：开盘=收盘=最低=最高=当日涨停价
+
+    `ulp` 为该股当日的涨停价。四个价格**全部取不复权口径**且都等于 `ulp`。
+
+    **容差必须极小（默认 5 厘）**：一字板的定义是四价"相等"，不是"接近"。
+    实测反例 003001 中岩大地 2026-09-16：开 18.47 / 收 18.47 / 高 18.47，
+    但**最低 18.46** —— 盘中下探过 1 分钱，是换手板/T 字板而**非一字板**。
+    若容差放到 1.1 分（涨停判定用的量级）就会把它误判成一字板。
+    5 厘只用来吸收浮点表示误差与半分钱舍入，不影响语义。
+
+    `tol` 允许调用方按需覆盖，但不应大于 0.01。
+
+    **为什么必须不复权**：`ulp` 由「不复权前收 × 涨停比例」算出，用前复权价
+    去比会在除权日整体错位（前复权会下调除权日之前的价格）。
+
+    **前提**：bar 必须含不复权 open/low（11 元组）。旧缓存的 bar 返回 False
+    —— 数据不足时宁可不判也不误判：误判会让「最高板」梯队凭空多出几层。
+
+    实例（2026-09-16 华瓷股份 001216，一字板）：开=高=低=收=18.07 → True
+    实例（2026-09-16 中岩大地 003001，T 字板）：低 18.46 ≠ 18.47 → False
+    实例（2026-09-15 西陇科学 002584，换手板）：开 7.85 / 低 7.81 → False
+    """
+    if len(bar) <= 10:
+        return False
+    if not ulp or ulp <= 0:
+        return False
+    vals = (bar_close_raw(bar), bar_high_raw(bar),
+            bar_open_raw(bar), bar_low_raw(bar))
+    if any(v is None for v in vals):
+        return False
+    return all(abs(float(v) - ulp) < tol for v in vals)
+
+
 def broken_from_klines(klines: dict, date_str: str, names: dict | None = None) -> dict:
     """由个股日K自建「炸板」池 —— 东财炸板池仅最近约 15 个交易日可查，更早无源
 
@@ -2593,7 +2848,10 @@ def broken_from_klines(klines: dict, date_str: str, names: dict | None = None) -
         name = names.get(code, "")
         # 与全市场重建同源同口径（含除权参考价基数、ST 比例反推），避免两处漂移
         _fl, _zbh, _zbl = limit_state(bars[idx - 1], bars[idx], code, name)
-        if _fl or _zbl is None:
+        # ⚠️ 判据是 **_zbh is None**（= 当日最高价根本没碰到涨停价）。
+        # V1.009.8 后 limit_state 恒返回涨停价 `_zbl`，它不再能表示「触及过涨停」
+        # —— 只有 `_zbh`（触板价）有这个语义，别再用 `_zbl is None` 作判据。
+        if _fl or _zbh is None:
             continue                      # 收盘封板 或 未触及涨停价 → 都不是炸板
         _, close, _v, _a = bar_parts(bars[idx])
         _, prev, _pv, _pa = bar_parts(bars[idx - 1])
@@ -2604,7 +2862,7 @@ def broken_from_klines(klines: dict, date_str: str, names: dict | None = None) -
             "name": name,
             "close": round(float(cur_raw if cur_raw is not None else close), 2),
             "high": round(float(hi_raw if hi_raw is not None else _zbh), 2),
-            "zt_price": round(float(_zbl), 2),
+            "zt_price": round(float(_zbl), 2) if _zbl is not None else None,
             # 涨跌幅用前复权（= 官方口径，跨除权日连续），价格用不复权（= 盘面所见）
             "pct": round((float(close) - float(prev)) / float(prev) * 100, 2)
                    if prev else None,
@@ -2620,13 +2878,77 @@ def broken_from_klines(klines: dict, date_str: str, names: dict | None = None) -
     }
 
 
+def _bar_complete(b) -> bool:
+    """该 bar 的四价是否齐全到可做一字板判定
+
+    需要 不复权收/高/开/低 全部非空（索引 5/6/9/10）。同花顺在收盘后一段时间内
+    对当日返回残缺行（`20260916,,,,9.54,0,0.00,...`），此时 open/high/low 全空。
+    """
+    if b is None or len(b) <= 10:
+        return False
+    return all(b[i] is not None for i in (5, 6, 9, 10))
+
+
+def _patch_latest(rows, code: str, datalen: int):
+    """同花顺结果的最后一根若「残缺」或「不是最新交易日」→ 用腾讯/新浪补齐
+
+    同花顺是唯一同时给「不复权价 + 开/低 + 精确成交额」的源，但它对当日有更新
+    延迟，表现为两种形态（都实测到过，2026-09-16）：
+
+      1. **残缺行** —— 当日行只有收盘价，开/高/低全空：
+         `20260916,,,,9.54,0,0.00,0.000,,,0`
+         实例 003001 中岩大地。补不进就会丢掉「最低 18.46 < 涨停 18.47」这一
+         关键差异，把 T 字板误判成一字板。
+      2. **漏日** —— 当日行压根没出现，末日停在昨天：
+         实例 002442 龙星科技，同花顺只到 09-15，而腾讯/新浪都给了 09-16 的
+         四价全等 5.68（真一字板）。不追加就整只票漏掉一个板。
+
+    两种形态都不能靠「末日是否完整」区分（漏日时末日是完整的历史行），
+    所以直接比对补源的末日：**比同花顺新就追加，同日就补四价**。
+
+    只处理最后一根：更早的交易日同花顺都完整，而全量对齐两源的前复权因子
+    （除权处理不同）反而会引入错误。
+    """
+    if not rows:
+        return rows
+    last = rows[-1]
+    last_date = last[0]
+
+    for fn in (_tx_kline, _sina_kline):
+        try:
+            alt = fn(code, min(datalen, 60))
+        except Exception:  # noqa: BLE001
+            alt = None
+        if not alt:
+            continue
+
+        # 情形二先判：补源比同花顺**多**一天 → 追加（漏日）
+        newer = [b for b in alt if b[0] > last_date]
+        if newer:
+            rows.extend(newer)
+            return rows
+
+        # 情形一：同日但同花顺为残缺行 → 用补源四价覆盖（保留同花顺的成交额）
+        if _bar_complete(last):
+            return rows                 # 末日已完整且不落后，无需处理
+        hit = next((b for b in reversed(alt) if b[0] == last_date), None)
+        if hit and _bar_complete(hit):
+            rows[-1] = (last[0], last[1], last[2], last[3],
+                        hit[4], hit[5], hit[6], hit[7], hit[8], hit[9], hit[10])
+            return rows
+
+    return rows
+
+
 def fetch_kline(code: str, datalen: int = 90):
-    """个股日K → [(date, close, volume股, amount元|None), ...] 升序；多源自动降级
+    """个股日K → [(date, close, volume股, amount元|None, high, ...), ...] 升序；多源自动降级
 
     源顺序按窗口长度自适应：
       datalen ≤ 130 —— 同花顺优先（唯一给出精确成交额、且覆盖北交所）；
       datalen > 130 —— 腾讯优先（同花顺只提供约 140 个交易日，长窗口不够）。
     腾讯与新浪都不给成交额，调用方用 bar_amount() 兜底估算。
+
+    同花顺结果若**最新交易日残缺**，用腾讯/新浪补齐该日（见 _patch_latest）。
     """
     order = (_ths_kline, _tx_kline, _sina_kline) if datalen <= 130 else \
             (_tx_kline, _ths_kline, _sina_kline)
@@ -2636,6 +2958,8 @@ def fetch_kline(code: str, datalen: int = 90):
         except Exception:  # noqa: BLE001
             rows = None
         if rows:
+            if fn is _ths_kline:
+                rows = _patch_latest(rows, code, datalen)
             return rows[-int(datalen):] if len(rows) > datalen else rows
     return None
 
@@ -2742,7 +3066,7 @@ def board_member_map(boards: list[dict], workers: int = 6, max_pages: int = 10,
         for pn in range(1, max_pages + 1):
             q = urllib.parse.urlencode({
                 "pn": pn, "pz": _BOARD_PAGE, "po": 1, "np": 1, "fltt": 2, "invt": 2,
-                "fid": "f20", "fs": "b:" + code, "fields": "f12,f14,f20",
+                "fid": "f20", "fs": "b:" + code, "fields": "f12,f14,f20,f21",
             })
             j = md._fetch_json(_API_CLIST + q, headers=md.EM_HEADERS, timeout=12, retries=1)
             d = (j or {}).get("data") or {}
@@ -2757,6 +3081,8 @@ def board_member_map(boards: list[dict], workers: int = 6, max_pages: int = 10,
                     "code": c,
                     "name": (r.get("f14") or "").replace(" ", ""),
                     "mktcap": r.get("f20") if isinstance(r.get("f20"), (int, float)) else 0.0,
+                    # f21 = 流通市值（中军口径用它，不是总市值 f20）
+                    "float_cap": r.get("f21") if isinstance(r.get("f21"), (int, float)) else 0.0,
                 })
             if len(rows) < _BOARD_PAGE:
                 break
@@ -2802,7 +3128,6 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
       zb(炸板家数) / lbc_n(连板家数) / brk_n(断板数) / promo(晋级率) / prem(接力溢价)
       / zt_r·up_r·zb_r（三个比例）。这些全是「昨日涨停/连板集合」与「今日结果」的比较，
       需要在板块内**跨交易日**维护两份集合（prev_zt / prev_lb），故放在日期循环外。
-
     ctx_out: 可选输出参数，回填个股指标与名称映射 —— 角色分层（board_roles）需要
     同一份指标，借此避免重复遍历 5900 只个股日K，也保证两者口径完全同源。
     """
@@ -2837,10 +3162,22 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
             p = code_pct.get(c)
             if not p:
                 continue
-            cps.append((c, m.get("name") or name_map.get(c, ""), p))
+            cps.append((c, m.get("name") or name_map.get(c, ""), p,
+                        float(m.get("float_cap") or m.get("mktcap") or 0)))
         if not cps:
             continue
-        # 板块内跨日状态：昨日涨停集合 / 昨日连板集合（晋级率、断板数、接力溢价用）
+        # 中军 = 板块内**流通市值** top3（不排除涨停股）。
+        # 用户口径（2026-09-17 确认）：中军涨幅是硬条件 —— 「中军涨才能说明除了
+        # 游资外，大资金也进场了」。故先按流通市值取定 top3 名单，再逐日看它们的
+        # 平均涨幅，**不在涨停股里做排除**（涨停的中军恰恰是最强的信号）。
+        # 名单按流通市值静态取定、不逐日重排 —— 否则大票涨了才进榜，等于用未来信息。
+        _top3 = sorted(cps, key=lambda x: -x[3])[:3]
+        jun_codes = {x[0] for x in _top3 if x[3] > 0}
+        jun_names = [x[1] for x in _top3 if x[3] > 0]
+        # 板块内跨日状态：
+        #   prev_zt —— 昨日涨停集合（断板数、晋级率、接力溢价都用它）
+        #   prev_lb —— 昨日**连板**集合（≥2 板，仅为将来的「连板晋级率」预留，
+        #              当前不参与 brk_n —— 断板口径是「昨日涨停股今日未再涨停」）
         prev_zt: set = set()
         prev_lb: set = set()
         for d in dates:
@@ -2852,14 +3189,18 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
             lbc_max = 0          # 当日涨停股里的最高连板（空间高度）
             lbc2 = 0             # 当日二板及以上家数（梯队厚度 ＝ 连板家数 lbc_n）
             amt = 0.0            # 当日涨停股成交额合计（资金容量）
+            ow_n = 0             # 一字板家数（开=收=低=高=当日涨停价）
             lead_n, lead_p = "", None
             zt_codes: list = []  # 当日涨停股代码（算晋级率 / 断板 / 接力溢价）
             lb_codes: list = []  # 当日二板及以上代码（算断板）
-            for (c, nm, p) in cps:
+            jun_ps: list = []    # 中军（流通市值 top3）当日涨幅
+            for (c, nm, p, _cap) in cps:
                 pv = p.get(d)
                 if pv is None:
                     continue
                 vals.append(pv)
+                if c in jun_codes:
+                    jun_ps.append(pv)
                 _lim = (code_limit.get(c) or {}).get(d) or 0
                 if _lim == 1:
                     zt += 1
@@ -2867,6 +3208,9 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                     _e = (code_extra.get(c) or {}).get(d) or []
                     _amt = _e[0] if len(_e) > 0 else None
                     _lbc = _e[1] if len(_e) > 1 else None
+                    # 一字板（V1.009.8）：extra 第 4 位（下标 3）；旧缓存无该位 → 0
+                    if len(_e) > 3 and _e[3]:
+                        ow_n += 1
                     if isinstance(_amt, (int, float)):
                         amt += float(_amt)
                     _lb = int(_lbc or 1)
@@ -2887,8 +3231,11 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 # 当日无有效成分股（全停牌）→ 清空跨日集合，下一日不做「昨日」比较
                 prev_zt, prev_lb = set(), set()
                 continue
-            # 昨日涨停股中今日仍未涨停的（断板）—— 用**昨日连板**集合算缺口
-            brk_n = len(prev_lb - set(zt_codes)) if prev_lb else 0
+            # 断板 = 昨日**涨停**股中今日未能再涨停的家数（用 prev_zt，不是 prev_lb）
+            #
+            # 曾经错用 prev_lb（只含 ≥2 板）：9/15 PCB 真断板 7 只，代码只数到 1 只。
+            # 断板面是「分歧」判据的核心输入，少算首板会让分歧强度被严重低估。
+            brk_n = len(prev_zt - set(zt_codes)) if prev_zt else 0
             # 晋级率 = 昨日涨停股今日再涨停 ÷ 昨日涨停数
             promo = (len(set(zt_codes) & prev_zt) / len(prev_zt)) if prev_zt else None
             # 接力溢价 = 昨日涨停股今日平均涨幅（打板盈亏的代理）
@@ -2925,6 +3272,18 @@ def rebuild_board_daily(members_map: dict, klines: dict, dates: list[str],
                 "up_r": round(up / _cnt, 4),                 # 扩散度（上涨家数占比）
                 # 炸板率 = 炸板 / (涨停 + 炸板)；分母为 0 时为 None（不是 0）
                 "zb_r": (round(zb / (zt + zb), 4) if (zt + zb) else None),
+                # ---- V1.009.8：中军（流通市值 top3 平均涨幅）----
+                # 硬条件：jun_pct > 0 才说明「除了游资外大资金也进场了」。
+                # 名单静态取 top3（不逐日重排）、**不排除涨停股**（涨停的中军最强）。
+                "jun": ([{"code": x[0], "name": x[1], "cap": x[3]} for x in _top3]
+                        if jun_codes else []),
+                "jun_pct": (round(sum(jun_ps) / len(jun_ps), 3) if jun_ps else None),
+                "jun_n": len(jun_ps),
+                # ---- V1.009.8：一字板家数（开=收=低=高=当日涨停价，全不复权）----
+                # 「一致性」判据的核心输入：一字板多 = 抢筹极端、无人卖（参见养家口径）。
+                # 历史日走 is_one_word_board（四价全等）；实时日走 fbt≤09:25:30 且 zbc=0
+                # 的代理（盘中拿不到 OHLC），两者语义相同、精度不同。
+                "ow_n": ow_n,
             })
             prev_zt, prev_lb = set(zt_codes), set(lb_codes)
         if on_progress and (done % 50 == 0 or done == total):
@@ -2962,7 +3321,13 @@ def _emo_z(row: dict) -> float:
 
 
 def _emo_dims(row: dict, zb_base=None) -> dict:
-    """八指标明细（前端悬停显示 / 报告附注用）"""
+    """九指标明细（前端悬停显示 / 报告附注用）
+
+    ⚠️ 这是**新字段的唯一透传点**：`_board_phase` 只读 `row`，但下游展示用的是
+    本函数的返回值（→ `_tphase[c][2]` → `phase_dims`/`main_lines[].phase_dims`）。
+    在 `rebuild_board_daily` 里加了字段却忘了在这里透传，会表现为
+    **「库里查不到该字段」**（实测 V1.009.8 的 jun_pct/ow_n 就是这么丢的）。
+    """
     return {
         "size": int(row.get("count") or 0),
         "zt": int(row.get("zt") or 0),
@@ -2976,6 +3341,10 @@ def _emo_dims(row: dict, zb_base=None) -> dict:
         "promo": row.get("promo"),
         "prem": row.get("prem"),
         "up_r": row.get("up_r"),
+        # ---- V1.009.8 ----
+        "jun_pct": row.get("jun_pct"),      # 中军（流通市值 top3）当日平均涨幅
+        "jun_n": int(row.get("jun_n") or 0),
+        "ow_n": int(row.get("ow_n") or 0),  # 一字板家数
     }
 
 
@@ -3010,12 +3379,26 @@ def _board_phase(row: dict, prev_stage, qz, zb_base, active_recent, prev_lbc,
     _pct = row.get("pct") or 0.0
     rs = round(_pct - (sh_pct or 0.0), 2)
 
+    # ---- V1.009.8 新判据输入：中军涨幅（一字板仅作佐证，不进判定）----
+    # jun_pct 取不到（板块内无有效流通市值 / 旧缓存无该字段）时为 None。
+    # 语义定为「缺失即放行」：拿不到数据 != 条件不成立，否则新字段会让
+    # **历史窗口前半段**（无 jun 数据的日子）阶段整体跳变。
+    _jun = row.get("jun_pct")
+    _jun_known = isinstance(_jun, (int, float))
+    jun_pos = (not _jun_known) or (_jun > _EMO_JUN_ON)   # 高潮硬条件（缺失放行）
+    jun_neg = _jun_known and _jun <= _EMO_JUN_ON         # 退潮加分腿（缺失不触发）
+    jun_txt = ("中军 %+.2f%%" % _jun) if _jun_known else "中军数据缺失"
+    ow_n = int(row.get("ow_n") or 0)
+
     zb_up = bool(zb is not None and zb_base is not None and zb >= zb_base + _EMO_ZB_UP)
     is_split = bool(zb_up or brkn >= 2)
     peak_h = lbmax >= _EMO_PEAK_H
     peak_w = bool(qz is not None and qz >= _EMO_PEAK_QZ and upr >= _EMO_PEAK_UPR
                   and zt >= _EMO_PEAK_ZT and lbn >= 1)
     is_peak = bool(peak_h or peak_w)
+    # 高潮·中军腿：峰值条件已满足的前提下，中军必须为正（用户硬条件）。
+    # 这是**收紧** —— 让「只有游资小票狂欢、大资金没进场」的日子不再算高潮。
+    peak_ok = bool(is_peak and jun_pos)
     hi_rising = lbmax >= int(prev_lbc or 0)
 
     if prev_stage in _EMO_ACTIVE:
@@ -3024,27 +3407,58 @@ def _board_phase(row: dict, prev_stage, qz, zb_base, active_recent, prev_lbc,
             return "退潮", ("明显转弱：板块 %+.2f%%（跑输大盘 %.2f 个点）、"
                           "上涨仅 %.0f%%、涨停 %d 家"
                           % (_pct, -rs, upr * 100, zt))
-        # A2 高潮：达到峰值 且 （龙头仍在创新高 或 没有撕裂）
-        if is_peak and (hi_rising or not is_split):
+        # A1b 退潮·中军腿（V1.009.8，**加分项**而非硬条件）：
+        #   中军为负是独立的转弱证据 —— 「游资不接、大资金也走了」。
+        #   写成「或」才有独立触发权（见常量区逻辑推导）。
+        #   护栏 rs<0 且 upr<0.5：「中军为负」单独不足以判退潮（潜伏组约 40% 也为负），
+        #   必须叠加板块已在走弱，才与「明显转弱」同义。
+        if jun_neg and rs < _EMO_FADE_JUN_RS and upr < _EMO_FADE_JUN_UPR:
+            return "退潮", ("%s转负（板块 %+.2f%%、上涨 %.0f%%）"
+                          "——游资不接、大资金亦撤"
+                          % (jun_txt, _pct, upr * 100))
+        # A2 高潮：达到峰值 且 中军为正（硬条件）且（龙头仍在创新高 或 没有撕裂）
+        if peak_ok and (hi_rising or not is_split):
             why = ("出现 %d 板高标" % lbmax) if peak_h else (
                 "涨停强度进全市场前 %.0f%%（涨停 %d 家、扩散度 %.0f%%、连板 %d 家）"
                 % ((1 - qz) * 100, zt, upr * 100, lbn))
             if is_split:
                 why += "，龙头仍在创新高（撕裂属内部换手）"
+            # V1.009.8：中军是**硬条件**故必写；一字板只作佐证（不改判定）
+            why += "；" + jun_txt + "（硬条件：大资金已进场）"
+            if ow_n >= _EMO_OW_STRONG:
+                why += "、一字板 %d 家（一致性极强）" % ow_n
             return "高潮", why
-        # A3 分歧：有撕裂 且 龙头不再创新高（＝养家的「龙头首阴」）
-        if is_split:
+        # A2b 达峰值但中军未转正 → **不判高潮**（V1.009.8 硬条件的直接后果）。
+        #   必须给出显式理由，否则用户会以为判据坏了（"明明 4 板高标怎么不是高潮"）。
+        #   落到分歧/发酵由后续规则决定 —— 这里只负责解释「为什么没给高潮」。
+        _peak_no_jun = bool(is_peak and not jun_pos)
+        # A3 分歧：有撕裂 **且扩散已走弱**（＝养家的「龙头首阴」）
+        #   V1.009.9 起加 `upr < _EMO_SPLIT_UPR` 护栏：只有「撕裂」不够 ——
+        #   撕裂 + 扩散仍强 = 内部换手（→ 落到 A4 发酵）；
+        #   撕裂 + 扩散走弱 = 真正的分歧。依据见常量区 _EMO_SPLIT_UPR 注释。
+        if is_split and upr < _EMO_SPLIT_UPR:
             _w = []
             if zb_up:
                 _w.append("炸板率 %.2f 高于自身均值 %.2f" % (zb, zb_base))
             if brkn >= 2:
                 _w.append("断板 %d 只" % brkn)
-            return "分歧", ("龙头首阴（最高板 %s → %d）＋%s"
-                          % (("%d" % prev_lbc) if prev_lbc else "0", lbmax, "、".join(_w)))
+            _r = ("龙头首阴（最高板 %s → %d）＋%s；扩散度仅 %.0f%%"
+                  % (("%d" % prev_lbc) if prev_lbc else "0", lbmax,
+                     "、".join(_w), upr * 100))
+            if _peak_no_jun:
+                _r += "；%s未转正，大资金未进场（不足以判高潮）" % jun_txt
+            return "分歧", _r
+        # A3b 撕裂但扩散未走弱（V1.009.9）——不判分歧，让 A4 发酵接手。
+        #   显式写明理由，避免用户看到「断板 5 只却不是分歧」时以为判据坏了。
         # A4 发酵
         if (lbn >= 1 or (qz is not None and qz >= _EMO_FERM_QZ)) and upr >= _EMO_FERM_UPR:
-            return "发酵", ("连板 %d 家、涨停 %d 家、上涨 %.0f%%，梯队仍在扩散"
-                          % (lbn, zt, upr * 100))
+            _why = ("连板 %d 家、涨停 %d 家、上涨 %.0f%%，梯队仍在扩散"
+                    % (lbn, zt, upr * 100))
+            # V1.009.9：若曾因「撕裂」差点进分歧，补一句说明为什么仍是发酵
+            if is_split and upr >= _EMO_SPLIT_UPR:
+                _why += ("；虽有断板/炸板（内部换手），但扩散度仍达 %.0f%%"
+                         "（≥%.0f%% 未走弱）" % (upr * 100, _EMO_SPLIT_UPR * 100))
+            return "发酵", _why
         # A5 兜底：跑输大盘判退潮，否则发酵
         if rs < 0:
             return "退潮", "跑输大盘 %.2f 个点，且梯队未接上" % (-rs)
@@ -3054,17 +3468,21 @@ def _board_phase(row: dict, prev_stage, qz, zb_base, active_recent, prev_lbc,
     if (not active_recent and qz is not None and qz >= _EMO_START_QZ
             and upr >= _EMO_START_UPR and lbmax <= 2 and zt >= 2):
         return "启动", ("近 %d 日无活跃，今日涨停强度进前 %.0f%%（涨停 %d 家、上涨 %.0f%%）、"
-                      "高度仅 %d 板，梯队尚未成形"
-                      % (_EMO_NEW_LOOKBACK, (1 - qz) * 100, zt, upr * 100, lbmax))
+                      "高度仅 %d 板，梯队尚未成形；%s"
+                      % (_EMO_NEW_LOOKBACK, (1 - qz) * 100, zt, upr * 100, lbmax, jun_txt))
+    # 发酵 / 启动**不加**中军硬条件（用户裁定）。
+    #   实测依据：中军在「启动」最强（中位 +2.770）、「发酵」次之（+2.045），
+    #   两者都显著高于「高潮」（+1.253）。把中军设成准入等于用高潮的特征
+    #   去卡启动，会把最强的启动信号整体拒掉 —— 语义搞反。
     if (qz is not None and qz >= _EMO_START_QZ and upr >= _EMO_START_UPR
             and (lbn >= 1 or zt >= 3)):
-        return "发酵", ("涨停强度进前 %.0f%%（涨停 %d 家、上涨 %.0f%%）%s"
+        return "发酵", ("涨停强度进前 %.0f%%（涨停 %d 家、上涨 %.0f%%）%s；%s"
                       % ((1 - qz) * 100, zt, upr * 100,
-                         ("、连板 %d 家" % lbn) if lbn else ""))
+                         ("、连板 %d 家" % lbn) if lbn else "", jun_txt))
     if zt == 0 and rs < _EMO_ICE_RS and upr < _EMO_ICE_UPR:
         return "冰点", ("无涨停、板块 %+.2f%%（跑输大盘 %.2f 个点）、上涨仅 %.0f%%"
                       % (_pct, -rs, upr * 100))
-    return "潜伏", "未进入情绪周期（无涨停联动，或强度 / 扩散度不足）"
+    return "潜伏", "未进入情绪周期（无涨停联动，或强度 / 扩散度不足）；%s" % jun_txt
 
 
 def attach_board_phases(board_daily: dict, dates: list[str],
@@ -3375,9 +3793,16 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
                         flags[d] = _fl
                         if _fl == 1:
                             zs.add(d)
-                    elif _zbl is not None:
+                    elif _zbh is not None and _zbl is not None:
                         # 炸板：盘中最高价触及涨停价，但收盘未封住（东财炸板池仅近
                         # ~15 日可查，更早的历史由这里自建；口径差异见 broken_from_klines）
+                        #
+                        # ⚠️ 判据必须是 **_zbh is not None**（= 真的触及过涨停价）。
+                        # V1.009.8 把 limit_state 改成「恒返回涨停价」后，_zbl 变成
+                        # **几乎恒非 None**，此时若仍用 `elif _zbl is not None` 作判据，
+                        # 所有既非涨停也非跌停的普通交易日都会被塞进 zbs，下游
+                        # round(_zbh, 3) 立刻 TypeError 崩掉整个重建（实测 70 日重建
+                        # 在 52% 处中断，K线全抓完却 saved=0）。
                         zbs[d] = (_zbh, _zbl)
             prev = close
             prev_bar = _bar
@@ -3459,13 +3884,19 @@ def build_history_snapshots(days: int = 60, include_boards: bool = True,
             # 炸板：不计入涨跌停家数，但单列统计（本身仍计入涨跌家数分布）
             if f == 0 and (zb_flags.get(code) or {}).get(d):
                 _hi, _lp = zb_flags[code][d]
-                zb_items[d].append({
-                    "code": code, "name": nm, "price": round(close, 3),
-                    "zt_price": round(_lp, 3), "high": round(_hi, 3),
-                    "pct": round(p, 2), "amount": round(amt, 0),
-                    "zbc": None,  # 开板次数需分时数据，日K源无法提供
-                    "is_st": is_st,
-                })
+                # 防御：_hi 为 None 说明这条记录不是真炸板（见 zbs 写入处的说明）。
+                # 直接 round(None) 会让整个重建在聚合阶段崩掉、且 K 线已全抓完拿不到成果。
+                if _hi is None:
+                    zb_flags[code].pop(d, None)
+                else:
+                    zb_items[d].append({
+                        "code": code, "name": nm, "price": round(close, 3),
+                        "zt_price": round(_lp, 3) if _lp is not None else None,
+                        "high": round(_hi, 3),
+                        "pct": round(p, 2), "amount": round(amt, 0),
+                        "zbc": None,  # 开板次数需分时数据，日K源无法提供
+                        "is_st": is_st,
+                    })
 
     for b in breadth.values():
         b["limit_up_ex_st"] = b["limit_up"]   # 兼容旧字段：与 limit_up 同义（均已剔 ST）

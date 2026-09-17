@@ -390,7 +390,7 @@ def run(port=PORT):
 
     ip = get_lan_ip()
     print("=" * 60)
-    print("  AIReviewSystem V1.0.9.7 - Starting...")
+    print("  AIReviewSystem V1.0.9.9 - Starting...")
     print("=" * 60)
     print()
     print("  On this PC:  http://localhost:{}".format(port))

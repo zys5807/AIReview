@@ -51,3 +51,6 @@ _*.png
 _*.mjs
 _*.txt
 backend/_*
+
+# 归档目录里的 UI 自证截图（只留本地，release notes 里以文字描述为据）
+docs/archive/*.png

@@ -206,10 +206,14 @@ def hist_put(db: Session, hist: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _norm_bar(b) -> tuple:
-    """缓存行 → 7 元组 (date, close, vol, amt, high, close_raw, high_raw)
+    """缓存行 → 11 元组 (date, close, vol, amt, high, close_raw, high_raw,
+                        open, low, open_raw, low_raw)
 
-    兼容早期只有 3/4/5 位的缓存：缺的位补 None。前复权价（close/high）用于涨跌幅，
-    不复权价（close_raw/high_raw）用于涨跌停与炸板判定。
+    兼容早期只有 3/4/5/7 位的缓存：缺的位补 None。
+    前复权价（close/high/open/low）用于涨跌幅与图形，不复权价
+    （close_raw/high_raw/open_raw/low_raw）用于涨跌停、炸板与**一字板**判定。
+
+    一字板需要四价（开/收/低/高）—— 索引 5/6/9/10 —— 全部为不复权口径。
     """
     def f(i):
         if len(b) <= i or b[i] is None:
@@ -219,11 +223,20 @@ def _norm_bar(b) -> tuple:
         except Exception:  # noqa: BLE001
             return None
 
-    return (b[0], f(1), f(2), f(3), f(4), f(5), f(6))
+    return (b[0], f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8), f(9), f(10))
+
+
+_BAR_LEN = 11
+
+# 附加字段位：前复权高 4 / 不复权收 5 / 不复权高 6 / 前复权开 7 /
+#             前复权低 8 / 不复权开 9 / 不复权低 10
+# 合并时这些位「有值优先」，避免升级过程中把新字段丢掉。
+_EXTRA_IDX = (4, 5, 6, 7, 8, 9, 10)
 
 
 def _pad7(b: list) -> list:
-    return b + [None] * (7 - len(b)) if len(b) < 7 else b
+    """补齐到 11 位（函数名保留 _pad7 以免牵连调用点，语义见 _BAR_LEN）"""
+    return b + [None] * (_BAR_LEN - len(b)) if len(b) < _BAR_LEN else b
 
 
 def klines_load(db: Session, need_from: str, min_last: str,
@@ -238,11 +251,13 @@ def klines_load(db: Session, need_from: str, min_last: str,
     为什么需要 (b)：次新股（如上市不足 60 个交易日的个股）永远无法满足 (a)，
     若只用 (a) 会被**永久排除**在重建之外，其涨停/成交额全部遗漏。
 
-    为什么需要 need_high：最高价（第 5 位）与不复权价（第 6/7 位）都是后加的字段，
-    早期缓存没有。需要回溯「炸板」时若沿用旧缓存会静默算不出任何炸板，
-    故此时**三位（4/5/6）都要有** —— 只查到最高价的 5 元组仍是不可用的：
+    为什么需要 need_high：最高价（第 5 位）、不复权价（第 6/7 位）与
+    open/low（第 8~11 位）都是后加的字段，早期缓存没有。需要回溯「炸板」或
+    判定「一字板」时若沿用旧缓存会静默算不出结果，故此时这些位都要有 ——
+    只查到最高价的 5 元组仍是不可用的：
     涨跌停基数要按「除权参考价」取（= 前复权前收 × 不复权当日收 / 前复权当日收），
-    缺了不复权价就只能退化成前复权前收，除权日之前的日子会被整体缩水而漏判涨停。
+    缺了不复权价就只能退化成前复权前收，除权日之前的日子会被整体缩水而漏判涨停；
+    而一字板判定必须同时有**不复权的开/收/低/高**四价。
     不满足即视为不可用，由调用方重抓升级。
     """
     out: dict = {}
@@ -258,9 +273,11 @@ def klines_load(db: Session, need_from: str, min_last: str,
         if min_last and str(bars[-1][0]) < min_last:
             continue
         if need_high:
+            # 末日必须带「不复权开/低」（9/10）才够做一字板判定；
+            # 旧缓存只有 7 位 → 重抓升级。
             _last = bars[-1]
-            if len(_last) <= 6 or any(_last[i] is None for i in (4, 5, 6)):
-                continue  # 旧格式缓存（无最高价 / 无不复权价）→ 重抓
+            if len(_last) <= 10 or any(_last[i] is None for i in (4, 5, 6, 9, 10)):
+                continue
         if str(bars[0][0]) > need_from:
             if not required or len(bars) < int(required):
                 continue
@@ -289,7 +306,8 @@ def _merge_bars(old: list, new: list) -> list:
     同日冲突时：
       ① 优先保留带**精确成交额**的那根（同花顺源给精确额，腾讯源只有 量×价
          估算，两者混用会让成交额口径不一致）；
-      ② 价格附加位（最高价 4 / 不复权收 5 / 不复权高 6）在两值间取「有值的那个」，
+      ② 价格附加位（前复权高 4 / 不复权收 5 / 不复权高 6 / 前复权开 7 /
+         前复权低 8 / 不复权开 9 / 不复权低 10）在两值间取「有值的那个」，
          旧格式缓存升级时不能把新拉到的字段丢掉，反之亦然。
     """
     m: dict = {}
@@ -303,12 +321,12 @@ def _merge_bars(old: list, new: list) -> list:
         nb = _pad7(list(b))
         pb = m.get(k)
         if pb is not None:
-            for i in (4, 5, 6):
+            for i in _EXTRA_IDX:
                 if nb[i] is None and pb[i] is not None:
                     nb[i] = pb[i]  # 新值缺该位 → 沿用旧值
             if _bar_amt(nb) is None and _bar_amt(pb) is not None:
                 # 新值缺精确额而旧值有 → 保留旧值成交额，附加位取有值者
-                for i in (4, 5, 6):
+                for i in _EXTRA_IDX:
                     if pb[i] is None:
                         pb[i] = nb[i]
                 m[k] = pb
@@ -320,13 +338,21 @@ def _merge_bars(old: list, new: list) -> list:
 def klines_save(db: Session, klines: dict, names: dict | None = None) -> int:
     """批量写入个股日K缓存（合并式，只写发生变化的）
 
-    每根存 [日期, 收盘, 成交量(股), 成交额(元|None), 最高价, 不复权收, 不复权高]：
+    每根存 **11 位**：
+      [0]日期 [1]前复权收 [2]量(股) [3]额(元|None) [4]前复权高
+      [5]不复权收 [6]不复权高 [7]前复权开 [8]前复权低 [9]不复权开 [10]不复权低
       成交额为空表示该源未提供，读取方用 收盘价×成交量 估算；
-      最高价供炸板回溯使用；
-      末两位不复权价供**涨跌停基数**使用（除权参考价 = 前复权前收 × 不复权当日收 /
-      前复权当日收，见 daily_market.limit_base），缺了它除权日之前的日子会漏判涨停。
+      4/5/6 供炸板回溯与**涨跌停基数**使用（除权参考价 = 前复权前收 × 不复权当日收 /
+      前复权当日收，见 daily_market.limit_base），缺了它除权日之前的日子会漏判涨停；
+      7~10 供**一字板判定**（开=收=低=高=当日涨停价，四价必须全用不复权）。
     价格一律 round 到 3 位（源数据本就 2 位，3 位是无损上限），不可截断到 2 位以外。
     与已有缓存按日期合并，保证缓存窗口单调变宽（见 _merge_bars），使重复重建的增量拉取生效。
+
+    ⚠️⚠️ **本函数是「11 位字段」的第 5 个必须同步的改动点**（另四处：`_norm_bar` /
+    `_pad7` / `_merge_bars` / `klines_load`）。V1.009.8 曾漏掉这里：抓取侧
+    `fetch_kline` 明明返回 11 位，但落库时 payload 只取 `b[0]~b[6]`，新字段**被静默丢弃**
+    —— 跑完 11 分钟全量重建后，库里末根仍是 7 位，一字板/中军全部算不出来，
+    且**不报任何错**。加字段时务必 grep 一遍 `[b[0], _g(b, 1)` 这类显式列位构造。
     """
     names = names or {}
 
@@ -348,7 +374,8 @@ def klines_save(db: Session, klines: dict, names: dict | None = None) -> int:
         payload = json.dumps(
             [[b[0], _g(b, 1), _g(b, 2),
               (round(float(b[3]), 0) if len(b) > 3 and b[3] is not None else None),
-              _g(b, 4), _g(b, 5), _g(b, 6)]
+              _g(b, 4), _g(b, 5), _g(b, 6),
+              _g(b, 7), _g(b, 8), _g(b, 9), _g(b, 10)]
              for b in merged],
             ensure_ascii=False)
         if r:
